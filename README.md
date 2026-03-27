@@ -67,6 +67,8 @@ IM channel bootstrap:
 ## API Contract
 
 - Frozen contract doc: `docs/API_CONTRACT.md`
+- Alignment scenarios: `docs/DEERFLOW_ALIGNMENT_SCENARIOS.md`
+- Release checklist: `docs/RELEASE_READINESS.md`
 - OpenAI compatibility:
   - `GET /v1/models`
   - `POST /v1/chat/completions` (supports `stream=true|false`)
