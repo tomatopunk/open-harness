@@ -423,6 +423,7 @@ dependencies = [
  "channel-runtime",
  "channel-wecom",
  "config-runtime",
+ "reqwest",
  "tracing",
 ]
 
@@ -434,6 +435,7 @@ dependencies = [
  "base64",
  "channel-runtime",
  "hmac",
+ "reqwest",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
@@ -457,6 +459,7 @@ dependencies = [
  "base64",
  "channel-runtime",
  "hmac",
+ "reqwest",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
@@ -2245,6 +2248,8 @@ dependencies = [
  "rand 0.8.5",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
  "tracing",
 ]
 
