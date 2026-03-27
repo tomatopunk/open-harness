@@ -21,6 +21,16 @@ pub struct StorageConfig {
     pub mode: String,
     #[serde(default = "default_local_fs_root")]
     pub local_fs_root: String,
+    #[serde(default)]
+    pub sqlite_url: Option<String>,
+    #[serde(default)]
+    pub postgres_url: Option<String>,
+    #[serde(default)]
+    pub redis_url: Option<String>,
+    #[serde(default)]
+    pub s3_bucket: Option<String>,
+    #[serde(default = "default_s3_prefix")]
+    pub s3_prefix: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -78,6 +88,10 @@ fn default_storage_mode() -> String {
 
 fn default_local_fs_root() -> String {
     ".deer-flow/local-fs".into()
+}
+
+fn default_s3_prefix() -> String {
+    "open-harness".into()
 }
 
 fn default_config_path() -> String {
@@ -143,7 +157,15 @@ fn default_manage() -> ManageConfig {
 }
 
 fn default_storage() -> StorageConfig {
-    StorageConfig { mode: default_storage_mode(), local_fs_root: default_local_fs_root() }
+    StorageConfig {
+        mode: default_storage_mode(),
+        local_fs_root: default_local_fs_root(),
+        sqlite_url: None,
+        postgres_url: None,
+        redis_url: None,
+        s3_bucket: None,
+        s3_prefix: default_s3_prefix(),
+    }
 }
 
 static SNAPSHOT: Lazy<RwLock<Option<AppConfig>>> = Lazy::new(|| RwLock::new(None));
@@ -162,6 +184,11 @@ fn ensure_default_config(path: &PathBuf) {
     let default_yaml = r#"storage:
   mode: local_fs
   local_fs_root: .deer-flow/local-fs
+  sqlite_url: null
+  postgres_url: null
+  redis_url: null
+  s3_bucket: null
+  s3_prefix: open-harness
 
 models:
   - name: gpt-4

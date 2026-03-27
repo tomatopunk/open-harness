@@ -17,6 +17,8 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 state-abstraction = { path = "../../crates/state-abstraction" }
 orchestrator-core = { path = "../../crates/orchestrator-core" }

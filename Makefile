@@ -1,10 +1,11 @@
-.PHONY: help fmt fmt-check lint test check build run-gateway run-manage run-channel run-orchestrator smoke docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke docker-up docker-down clean
 
 help:
 	@echo "open-harness common commands"
 	@echo ""
 	@echo "  make fmt              - format all Rust code"
 	@echo "  make fmt-check        - check formatting only"
+	@echo "  make pre-commit       - required checks before commit (fmt-check + lint + test)"
 	@echo "  make lint             - run clippy with warnings as errors"
 	@echo "  make test             - run workspace tests"
 	@echo "  make check            - run fmt-check + lint + test"
@@ -29,6 +30,8 @@ lint:
 
 test:
 	cargo test --workspace
+
+pre-commit: fmt-check lint test
 
 check: fmt-check lint test
 

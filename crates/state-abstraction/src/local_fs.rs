@@ -17,6 +17,7 @@ impl LocalFsLayout {
         std::fs::create_dir_all(self.root.join("uploads"))?;
         std::fs::create_dir_all(self.root.join("artifacts"))?;
         std::fs::create_dir_all(self.root.join("memory"))?;
+        std::fs::create_dir_all(self.root.join("state").join("checkpoints"))?;
         Ok(())
     }
 

@@ -9,7 +9,9 @@ use config_runtime::load_or_default;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use state_abstraction::StorageBackendKind;
+use state_abstraction::{
+    LocalFsStateStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
+};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
@@ -25,6 +27,7 @@ struct AppState {
     threads_root: PathBuf,
     local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
+    storage: Arc<LocalFsStateStore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,8 +43,6 @@ struct ModelInfo {
 #[derive(Debug, Clone, Default)]
 struct ManageStore {
     mcp_servers: serde_json::Value,
-    skills: HashMap<String, bool>,
-    facts: HashMap<String, Vec<String>>,
     agents: HashMap<String, serde_json::Value>,
     channels: HashMap<String, String>,
     models: Vec<ModelInfo>,
@@ -80,21 +81,18 @@ async fn main() -> anyhow::Result<()> {
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_manage_requests_total", "Manage API requests");
 
-    let mut skills = HashMap::new();
-    skills.insert("research".to_string(), true);
-    skills.insert("report-generation".to_string(), true);
     let mut channels = HashMap::new();
     channels.insert("dingtalk".to_string(), "running".to_string());
     channels.insert("wecom".to_string(), "running".to_string());
+    let storage = Arc::new(LocalFsStateStore::new(local_fs_root.clone()));
 
     let state = AppState {
         delete_engine,
         threads_root: threads_root.clone(),
         local_fs_root: local_fs_root.clone(),
+        storage: storage.clone(),
         store: Arc::new(RwLock::new(ManageStore {
             mcp_servers: json!({}),
-            skills,
-            facts: HashMap::new(),
             agents: HashMap::new(),
             channels,
             models: cfg
@@ -112,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
             storage_mode: cfg.storage.mode.clone(),
         })),
     };
+    bootstrap_storage(&state).await;
 
     let app = Router::new()
         .route("/healthz", get(health))
@@ -260,8 +259,24 @@ async fn put_mcp_config(
 }
 
 async fn get_memory(State(st): State<AppState>) -> impl IntoResponse {
-    let s = st.store.read().await;
-    Json(json!({ "facts": s.facts }))
+    let mut thread_facts = serde_json::Map::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(st.local_fs_root.join("memory")).await {
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let name = ent.file_name();
+            let Some(filename) = name.to_str() else {
+                continue;
+            };
+            let Some(id) = filename.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(thread_id) = Uuid::parse_str(id) else {
+                continue;
+            };
+            let facts = st.storage.list_facts(thread_id).await.unwrap_or_default();
+            thread_facts.insert(id.to_string(), json!(facts));
+        }
+    }
+    Json(json!({ "facts": thread_facts }))
 }
 
 async fn reload_memory() -> impl IntoResponse {
@@ -277,17 +292,30 @@ async fn get_memory_config() -> impl IntoResponse {
 }
 
 async fn get_memory_status(State(st): State<AppState>) -> impl IntoResponse {
-    let s = st.store.read().await;
+    let mut facts_count = 0usize;
+    if let Ok(mut rd) = tokio::fs::read_dir(st.local_fs_root.join("memory")).await {
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let Some(filename) = ent.file_name().to_str().map(ToString::to_string) else {
+                continue;
+            };
+            let Some(id) = filename.strip_suffix(".json") else {
+                continue;
+            };
+            if let Ok(thread_id) = Uuid::parse_str(id) {
+                facts_count += st.storage.list_facts(thread_id).await.unwrap_or_default().len();
+            }
+        }
+    }
     Json(json!({
         "config": {"enabled": true},
-        "data": {"facts_count": s.facts.values().map(|v| v.len()).sum::<usize>()}
+        "data": {"facts_count": facts_count}
     }))
 }
 
 async fn list_skills(State(st): State<AppState>) -> impl IntoResponse {
-    let s = st.store.read().await;
+    let skills = st.storage.list_skills().await.unwrap_or_default();
     let skills: Vec<serde_json::Value> =
-        s.skills.iter().map(|(name, enabled)| json!({"name": name, "enabled": enabled})).collect();
+        skills.into_iter().map(|s| json!({"name": s.name, "enabled": s.enabled})).collect();
     Json(json!({ "skills": skills }))
 }
 
@@ -295,11 +323,16 @@ async fn get_skill(
     State(st): State<AppState>,
     Path(skill_name): Path<String>,
 ) -> impl IntoResponse {
-    let s = st.store.read().await;
-    if let Some(enabled) = s.skills.get(&skill_name) {
-        (StatusCode::OK, Json(json!({"name": skill_name, "enabled": enabled}))).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, Json(json!({"error":"skill_not_found"}))).into_response()
+    match st.storage.get_skill(&skill_name).await {
+        Ok(Some(skill)) => {
+            (StatusCode::OK, Json(json!({"name": skill.name, "enabled": skill.enabled})))
+                .into_response()
+        }
+        Ok(None) => {
+            (StatusCode::NOT_FOUND, Json(json!({"error":"skill_not_found"}))).into_response()
+        }
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"skill_store_failure"})))
+            .into_response(),
     }
 }
 
@@ -309,10 +342,34 @@ async fn update_skill(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    let mut s = st.store.write().await;
-    s.skills.insert(skill_name.clone(), enabled);
-    let _ = persist_json(&st.local_fs_root.join("config").join("skills.json"), &json!(s.skills));
-    Json(json!({"name": skill_name, "enabled": enabled}))
+    if st.storage.put_skill(&SkillRecord { name: skill_name.clone(), enabled }).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"persist_skill_failed"})))
+            .into_response();
+    }
+    Json(json!({"name": skill_name, "enabled": enabled})).into_response()
+}
+
+async fn seed_default_skills(storage: &LocalFsStateStore) {
+    let defaults = [("research", true), ("report-generation", true)];
+    for (name, enabled) in defaults {
+        let existing = storage.get_skill(name).await.ok().flatten();
+        if existing.is_none() {
+            let _ = storage.put_skill(&SkillRecord { name: name.to_string(), enabled }).await;
+        }
+    }
+}
+
+async fn init_memory_defaults(storage: &LocalFsStateStore) {
+    let demo_thread = Uuid::nil();
+    let facts = storage.list_facts(demo_thread).await.unwrap_or_default();
+    if facts.is_empty() {
+        let _ = storage.append_fact(demo_thread, "system:memory_initialized").await;
+    }
+}
+
+async fn bootstrap_storage(state: &AppState) {
+    seed_default_skills(&state.storage).await;
+    init_memory_defaults(&state.storage).await;
 }
 
 async fn upload_thread_files(

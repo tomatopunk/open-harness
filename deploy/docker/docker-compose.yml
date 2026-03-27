@@ -54,6 +54,10 @@ services:
       OPEN_HARNESS_MANAGE__LANGGRAPH_URL: ${OPEN_HARNESS_MODEL_URL:?please_set_real_langgraph_url}
       OPEN_HARNESS_MANAGE__THREADS_ROOT: /data/threads
       OPEN_HARNESS_CONFIG_PATH: /data/config.yaml
+      OPEN_HARNESS_STORAGE__MODE: ${OPEN_HARNESS_STORAGE_MODE:-local_fs}
+      OPEN_HARNESS_STORAGE__REDIS_URL: redis://redis:6379
+      OPEN_HARNESS_STORAGE__POSTGRES_URL: postgres://open_harness:open_harness@postgres:5432/open_harness
+      OPEN_HARNESS_STORAGE__S3_PREFIX: open-harness
     volumes:
       - manage-data:/data
     healthcheck:
@@ -87,6 +91,14 @@ services:
       dockerfile: deploy/docker/Dockerfile.orchestrator
     ports:
       - "8083:8083"
+    environment:
+      OPEN_HARNESS_CONFIG_PATH: /data/config.yaml
+      OPEN_HARNESS_STORAGE__MODE: ${OPEN_HARNESS_STORAGE_MODE:-local_fs}
+      OPEN_HARNESS_STORAGE__REDIS_URL: redis://redis:6379
+      OPEN_HARNESS_STORAGE__POSTGRES_URL: postgres://open_harness:open_harness@postgres:5432/open_harness
+      OPEN_HARNESS_STORAGE__S3_PREFIX: open-harness
+    volumes:
+      - manage-data:/data
     healthcheck:
       test: ["CMD", "sh", "-c", "echo >/dev/tcp/127.0.0.1/8083"]
       interval: 10s
