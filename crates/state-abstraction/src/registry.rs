@@ -4,10 +4,24 @@ use crate::traits::{ArtifactStore, CheckpointStore, MemoryStore, ThreadMetaStore
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageBackendKind {
+    LocalFs,
     Sqlite,
     Postgres,
     Redis,
     S3,
+}
+
+impl StorageBackendKind {
+    pub fn from_mode(mode: &str) -> Self {
+        match mode {
+            "local_fs" => Self::LocalFs,
+            "sqlite" => Self::Sqlite,
+            "postgres" => Self::Postgres,
+            "redis" => Self::Redis,
+            "s3" => Self::S3,
+            _ => Self::LocalFs,
+        }
+    }
 }
 
 /// Holds concrete store implementations selected by configuration.

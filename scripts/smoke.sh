@@ -4,6 +4,7 @@ GATEWAY="${GATEWAY_URL:-http://127.0.0.1:8080}"
 MANAGE="${MANAGE_URL:-http://127.0.0.1:8081}"
 CHANNEL="${CHANNEL_URL:-http://127.0.0.1:8082}"
 ORCH="${ORCH_URL:-http://127.0.0.1:8083}"
+LOCAL_FS_ROOT="${LOCAL_FS_ROOT:-.deer-flow/local-fs}"
 
 echo "== health checks"
 curl -fsS "$GATEWAY/healthz"
@@ -14,6 +15,16 @@ curl -fsS "$ORCH/healthz"
 echo ""
 echo "== gateway demo SSE"
 curl -fsSN "$GATEWAY/api/langgraph/demo-stream" | head -n 3
+
+echo ""
+echo "== openai models"
+curl -fsS "$GATEWAY/v1/models"
+
+echo ""
+echo "== openai chat completion"
+curl -fsS -X POST "$GATEWAY/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"open-harness-default","messages":[{"role":"user","content":"hello"}],"user":"smoke-user"}'
 
 echo ""
 echo "== manage thread delete (async)"
@@ -40,5 +51,22 @@ echo ""
 
 echo "== orchestrator pipeline"
 curl -fsS -X POST "$ORCH/internal/pipeline-check"
+echo ""
+echo "== manage core APIs"
+curl -fsS "$MANAGE/api/models"
+echo ""
+curl -fsS "$MANAGE/api/skills"
+echo ""
+curl -fsS "$MANAGE/api/channels/"
+echo ""
+echo "== local_fs layout check"
+for p in config tasks threads uploads artifacts memory; do
+  test -d "$LOCAL_FS_ROOT/$p" || { echo "missing $LOCAL_FS_ROOT/$p"; exit 1; }
+done
+echo "local_fs ok"
+echo ""
+echo "== orchestrator orchestrate"
+curl -fsS -X POST "$ORCH/internal/orchestrate" -H 'Content-Type: application/json' \
+  -d '{"configurable":{"is_plan_mode":true,"subagent_enabled":true,"max_concurrent_subagents":2},"messages":["fact:smoke","hello"]}'
 echo ""
 echo "OK"
