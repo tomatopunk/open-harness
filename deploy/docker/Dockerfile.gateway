@@ -1,0 +1,11 @@
+FROM rust:1.83-bookworm AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p open-harness-gateway
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/open-harness-gateway /usr/local/bin/
+ENV OPEN_HARNESS_GATEWAY__BIND=0.0.0.0:8080
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/open-harness-gateway"]
