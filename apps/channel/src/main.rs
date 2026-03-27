@@ -118,6 +118,16 @@ async fn channel_hook(
         .await;
     let reply = match result {
         Ok(resp) => {
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Json(json!({
+                    "error": "gateway_upstream_error",
+                    "status": status,
+                    "body": body,
+                    "platform": platform,
+                }));
+            }
             let v = resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({}));
             v.get("choices")
                 .and_then(|c| c.as_array())
@@ -128,8 +138,20 @@ async fn channel_hook(
                 .unwrap_or("ok")
                 .to_string()
         }
-        Err(e) => format!("gateway_error: {e}"),
+        Err(e) => {
+            return Json(json!({
+                "error": format!("gateway_request_failed: {e}"),
+                "platform": platform,
+            }));
+        }
     };
-    let _ = driver.send_message(&env.chat_id, &reply).await;
-    Json(json!(HookResponse { platform, delivered: true, reply }))
+    match driver.send_message(&env.chat_id, &reply).await {
+        Ok(()) => Json(json!(HookResponse { platform, delivered: true, reply })),
+        Err(e) => Json(json!({
+            "error": e.to_string(),
+            "platform": platform,
+            "delivered": false,
+            "reply": reply
+        })),
+    }
 }
