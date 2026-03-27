@@ -133,23 +133,64 @@ async fn openapi_spec() -> impl IntoResponse {
         "info": {"title": "open-harness-gateway", "version": "0.1.0"},
         "components": {
             "schemas": {
+                "ChatMessage": {
+                    "type": "object",
+                    "required": ["role", "content"],
+                    "properties": {
+                        "role": {"type": "string", "enum": ["system", "user", "assistant", "tool"]},
+                        "content": {"oneOf": [{"type": "string"}, {"type": "array"}]},
+                        "name": {"type": "string"},
+                        "tool_calls": {"type": "array"}
+                    }
+                },
                 "ChatCompletionRequest": {
                     "type": "object",
                     "required": ["model", "messages"],
                     "properties": {
-                        "model": {"type": "string"},
-                        "messages": {"type": "array"},
+                        "model": {"type": "string", "description": "Model id from /v1/models"},
+                        "messages": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/ChatMessage"},
+                            "description": "OpenAI-compatible chat messages"
+                        },
+                        "temperature": {"type": "number"},
+                        "max_tokens": {"type": "integer"},
                         "stream": {"type": "boolean"},
-                        "user": {"type": "string"}
+                        "user": {"type": "string", "description": "Opaque user id; mapped to thread id"},
+                        "tools": {"type": "array"},
+                        "tool_choice": {},
+                        "response_format": {}
+                    }
+                },
+                "ChatCompletionChoice": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "message": {"$ref": "#/components/schemas/ChatMessage"},
+                        "finish_reason": {"type": "string"}
                     }
                 },
                 "ChatCompletionResponse": {
                     "type": "object",
+                    "required": ["id", "object", "created", "model", "choices"],
                     "properties": {
                         "id": {"type": "string"},
-                        "object": {"type": "string"},
+                        "object": {"type": "string", "enum": ["chat.completion"]},
                         "created": {"type": "integer"},
                         "model": {"type": "string"},
+                        "choices": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/ChatCompletionChoice"}
+                        },
+                        "usage": {"type": "object"}
+                    }
+                },
+                "ChatCompletionChunk": {
+                    "type": "object",
+                    "description": "SSE chunk when stream=true",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "object": {"type": "string", "enum": ["chat.completion.chunk"]},
                         "choices": {"type": "array"}
                     }
                 }
