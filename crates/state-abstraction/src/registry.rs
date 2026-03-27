@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::traits::{
-    ArtifactStore, CheckpointStore, MemoryStore, SandboxExecutionStore, SkillStore,
-    SubagentTaskStore, ThreadMetaStore, ToolRecordStore,
+    ArtifactStore, CheckpointStore, ManageTaskStore, MemoryStore, SandboxExecutionStore,
+    SkillStore, SubagentTaskStore, ThreadMetaStore, ToolRecordStore,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,9 +37,11 @@ pub struct StorageRegistry {
     pub tools: Arc<dyn ToolRecordStore>,
     pub subagents: Arc<dyn SubagentTaskStore>,
     pub sandbox: Arc<dyn SandboxExecutionStore>,
+    pub manage_tasks: Arc<dyn ManageTaskStore>,
 }
 
 impl StorageRegistry {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         threads: Arc<dyn ThreadMetaStore>,
         checkpoints: Arc<dyn CheckpointStore>,
@@ -49,7 +51,18 @@ impl StorageRegistry {
         tools: Arc<dyn ToolRecordStore>,
         subagents: Arc<dyn SubagentTaskStore>,
         sandbox: Arc<dyn SandboxExecutionStore>,
+        manage_tasks: Arc<dyn ManageTaskStore>,
     ) -> Self {
-        Self { threads, checkpoints, artifacts, memory, skills, tools, subagents, sandbox }
+        Self {
+            threads,
+            checkpoints,
+            artifacts,
+            memory,
+            skills,
+            tools,
+            subagents,
+            sandbox,
+            manage_tasks,
+        }
     }
 }

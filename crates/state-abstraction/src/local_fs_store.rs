@@ -5,9 +5,9 @@ use tokio::fs;
 use uuid::Uuid;
 
 use crate::traits::{
-    ArtifactStore, CheckpointBlob, CheckpointStore, MemoryStore, SandboxExecution,
-    SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore,
-    ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
+    ArtifactStore, CheckpointBlob, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
+    SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask,
+    SubagentTaskStore, ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
 };
 
 #[derive(Debug, Clone)]
@@ -46,6 +46,10 @@ impl LocalFsStateStore {
 
     fn sandbox_path(&self, thread_id: Uuid) -> PathBuf {
         self.root.join("tasks").join(format!("sandbox-{thread_id}.json"))
+    }
+
+    fn manage_task_path(&self, thread_id: &str) -> PathBuf {
+        self.root.join("tasks").join(format!("manage-{thread_id}.json"))
     }
 
     fn artifact_path(&self, thread_id: Uuid, name: &str) -> PathBuf {
@@ -261,6 +265,52 @@ impl SandboxExecutionStore for LocalFsStateStore {
 
     async fn list_executions(&self, thread_id: Uuid) -> Result<Vec<SandboxExecution>, StateError> {
         self.read_json_vec::<SandboxExecution>(&self.sandbox_path(thread_id)).await
+    }
+}
+
+#[async_trait]
+impl ManageTaskStore for LocalFsStateStore {
+    async fn upsert_task(&self, task: &ManageTaskRecord) -> Result<(), StateError> {
+        let path = self.manage_task_path(&task.thread_id);
+        let mut items = self.read_json_vec::<ManageTaskRecord>(&path).await?;
+        if let Some(existing) = items.iter_mut().find(|t| t.task_id == task.task_id) {
+            *existing = task.clone();
+        } else {
+            items.push(task.clone());
+        }
+        self.write_json(&path, &items).await
+    }
+
+    async fn get_task(&self, task_id: &str) -> Result<Option<ManageTaskRecord>, StateError> {
+        let dir = self.root.join("tasks");
+        let mut rd = match fs::read_dir(dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(StateError::Backend(format!("read tasks dir: {e}"))),
+        };
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let path = ent.path();
+            if !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("manage-"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let items = self.read_json_vec::<ManageTaskRecord>(&path).await?;
+            if let Some(item) = items.into_iter().find(|i| i.task_id == task_id) {
+                return Ok(Some(item));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn list_tasks_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<ManageTaskRecord>, StateError> {
+        self.read_json_vec::<ManageTaskRecord>(&self.manage_task_path(thread_id)).await
     }
 }
 

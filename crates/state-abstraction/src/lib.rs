@@ -9,7 +9,7 @@ pub use local_fs::LocalFsLayout;
 pub use local_fs_store::LocalFsStateStore;
 pub use registry::{StorageBackendKind, StorageRegistry};
 pub use traits::{
-    ArtifactStore, CheckpointBlob, CheckpointStore, MemoryStore, SandboxExecution,
-    SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore,
-    ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
+    ArtifactStore, CheckpointBlob, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
+    SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask,
+    SubagentTaskStore, ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
 };
