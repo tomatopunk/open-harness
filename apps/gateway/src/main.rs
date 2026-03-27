@@ -15,12 +15,16 @@ use chrono::Utc;
 use config_runtime::{load_cached_or_default, reload_cached, AuthConfig, ModelConfig};
 use dashmap::DashMap;
 use metrics_exporter_prometheus::PrometheusBuilder;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::{trace::TracerProvider, Resource};
 use protocol_compat::{OpenAiChatCompletionsRequest, OpenAiModelItem, OpenAiModelsResponse};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
+use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 mod chat_support;
@@ -50,12 +54,22 @@ const CONVERSATION_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "gateway_service=info,tower_http=info".into()),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "gateway_service=info,tower_http=info".into());
+    let _otel_provider = init_otel_provider()?;
+    if let Some(provider) = _otel_provider.as_ref() {
+        let tracer = provider.tracer("open-harness-gateway");
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .with(tracing_opentelemetry::layer().with_tracer(tracer))
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+    }
 
     let cfg = load_cached_or_default();
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
@@ -117,14 +131,64 @@ async fn openapi_spec() -> impl IntoResponse {
     Json(json!({
         "openapi": "3.1.0",
         "info": {"title": "open-harness-gateway", "version": "0.1.0"},
+        "components": {
+            "schemas": {
+                "ChatCompletionRequest": {
+                    "type": "object",
+                    "required": ["model", "messages"],
+                    "properties": {
+                        "model": {"type": "string"},
+                        "messages": {"type": "array"},
+                        "stream": {"type": "boolean"},
+                        "user": {"type": "string"}
+                    }
+                },
+                "ChatCompletionResponse": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "object": {"type": "string"},
+                        "created": {"type": "integer"},
+                        "model": {"type": "string"},
+                        "choices": {"type": "array"}
+                    }
+                }
+            }
+        },
         "paths": {
             "/healthz": {"get": {"summary": "Health check"}},
             "/v1/models": {"get": {"summary": "List models"}},
-            "/v1/chat/completions": {"post": {"summary": "OpenAI compatible chat completions"}},
+            "/v1/chat/completions": {"post": {
+                "summary": "OpenAI compatible chat completions",
+                "requestBody": {
+                    "required": true,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatCompletionRequest"}}}
+                },
+                "responses": {
+                    "200": {"description": "chat completion", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatCompletionResponse"}}}}
+                }
+            }},
             "/api/admin/config/reload": {"post": {"summary": "Reload config"}},
             "/metrics": {"get": {"summary": "Prometheus metrics"}}
         }
     }))
+}
+
+fn init_otel_provider() -> anyhow::Result<Option<TracerProvider>> {
+    let endpoint = match std::env::var("OPEN_HARNESS_OTLP_ENDPOINT") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Ok(None),
+    };
+    let exporter =
+        opentelemetry_otlp::SpanExporter::builder().with_tonic().with_endpoint(endpoint).build()?;
+    let provider = TracerProvider::builder()
+        .with_resource(Resource::new(vec![opentelemetry::KeyValue::new(
+            "service.name",
+            "open-harness-gateway",
+        )]))
+        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        .build();
+    Ok(Some(provider))
 }
 
 /// Minimal SSE demo (LangGraph-style `data: {json}\n\n`).
