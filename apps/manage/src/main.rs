@@ -21,6 +21,9 @@ use state_abstraction::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use storage_postgres::PostgresManageTaskStore;
+use storage_redis::RedisManageTaskStore;
+use storage_s3::build_s3_manage_store;
+use storage_sqlite::SqliteManageTaskStore;
 use tokio::sync::RwLock;
 use tokio_util::task::TaskTracker;
 use tower_http::trace::TraceLayer;
@@ -321,6 +324,15 @@ fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+fn sqlite_connect_url(cfg: &config_runtime::AppConfig) -> Option<String> {
+    let u = cfg.storage.sqlite_url.clone().or(cfg.manage.sqlite_url.clone())?;
+    Some(if u.starts_with("sqlite:") {
+        u
+    } else {
+        format!("sqlite://{}", u.trim_start_matches('/'))
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct StorageSwitch {
     backend: String,
@@ -404,59 +416,91 @@ async fn switch_runtime_storage(
         }
         StorageBackendKind::Sqlite => {
             let cfg = load_cached_or_default();
-            if cfg.storage.sqlite_url.is_none() && cfg.manage.sqlite_url.is_none() {
-                return Err("sqlite_url is missing in storage/manage config".to_string());
-            }
+            let url = sqlite_connect_url(&cfg)
+                .ok_or_else(|| "sqlite_url is missing in storage/manage config".to_string())?;
             let mut rt = st.storage_runtime.write().await;
             rt.active_mode = "sqlite".to_string();
-            rt.manage_tasks = st.storage.clone();
             rt.capabilities = storage_capabilities("sqlite");
             rt.last_switch_ts = now_ts();
-            Ok((
-                true,
-                rt.active_mode.clone(),
-                rt.capabilities.clone(),
-                Some(
-                    "sqlite selected; manage task store is currently backed by local_fs"
-                        .to_string(),
-                ),
-            ))
+            match SqliteManageTaskStore::connect(&url).await {
+                Ok(sqlite) => {
+                    rt.manage_tasks = Arc::new(sqlite);
+                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "sqlite manage_tasks unavailable; fallback local_fs");
+                    rt.manage_tasks = st.storage.clone();
+                    Ok((
+                        true,
+                        rt.active_mode.clone(),
+                        rt.capabilities.clone(),
+                        Some(format!(
+                            "sqlite connect failed ({e}); using local_fs manage_tasks (deterministic fallback)"
+                        )),
+                    ))
+                }
+            }
         }
         StorageBackendKind::Redis => {
             let cfg = load_cached_or_default();
-            if cfg.storage.redis_url.is_none() {
-                return Err("redis_url is missing in storage config".to_string());
-            }
+            let redis_url = cfg
+                .storage
+                .redis_url
+                .clone()
+                .ok_or_else(|| "redis_url is missing in storage config".to_string())?;
             let mut rt = st.storage_runtime.write().await;
             rt.active_mode = "redis".to_string();
-            rt.manage_tasks = st.storage.clone();
             rt.capabilities = storage_capabilities("redis");
             rt.last_switch_ts = now_ts();
-            Ok((
-                true,
-                rt.active_mode.clone(),
-                rt.capabilities.clone(),
-                Some(
-                    "redis selected; manage task store is currently backed by local_fs".to_string(),
-                ),
-            ))
+            match RedisManageTaskStore::connect(&redis_url).await {
+                Ok(redis_store) => {
+                    rt.manage_tasks = Arc::new(redis_store);
+                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "redis manage_tasks unavailable; fallback local_fs");
+                    rt.manage_tasks = st.storage.clone();
+                    Ok((
+                        true,
+                        rt.active_mode.clone(),
+                        rt.capabilities.clone(),
+                        Some(format!(
+                            "redis connect failed ({e}); using local_fs manage_tasks (deterministic fallback)"
+                        )),
+                    ))
+                }
+            }
         }
         StorageBackendKind::S3 => {
             let cfg = load_cached_or_default();
-            if cfg.storage.s3_bucket.is_none() {
-                return Err("s3_bucket is missing in storage config".to_string());
-            }
+            let bucket = cfg
+                .storage
+                .s3_bucket
+                .clone()
+                .ok_or_else(|| "s3_bucket is missing in storage config".to_string())?;
+            let prefix = cfg.storage.s3_prefix.clone();
             let mut rt = st.storage_runtime.write().await;
             rt.active_mode = "s3".to_string();
-            rt.manage_tasks = st.storage.clone();
             rt.capabilities = storage_capabilities("s3");
             rt.last_switch_ts = now_ts();
-            Ok((
-                true,
-                rt.active_mode.clone(),
-                rt.capabilities.clone(),
-                Some("s3 selected; manage task store is currently backed by local_fs".to_string()),
-            ))
+            match build_s3_manage_store(&bucket, prefix) {
+                Ok(s3_store) => {
+                    rt.manage_tasks = Arc::new(s3_store);
+                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "s3 manage_tasks unavailable; fallback local_fs");
+                    rt.manage_tasks = st.storage.clone();
+                    Ok((
+                        true,
+                        rt.active_mode.clone(),
+                        rt.capabilities.clone(),
+                        Some(format!(
+                            "s3 init failed ({e}); using local_fs manage_tasks (deterministic fallback)"
+                        )),
+                    ))
+                }
+            }
         }
     }
 }
@@ -928,16 +972,7 @@ async fn get_thread_artifact(
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build").into_response())
 }
 
-async fn post_suggestions(
-    State(st): State<AppState>,
-    Path(thread_id): Path<String>,
-    Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
-        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
-            .into_response();
-    };
+fn heuristic_suggestions(body: &serde_json::Value) -> Vec<String> {
     let mut suggestions = Vec::new();
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         if let Some(last) = messages.last().and_then(|m| m.get("content")).and_then(|v| v.as_str())
@@ -948,6 +983,104 @@ async fn post_suggestions(
     }
     if suggestions.is_empty() {
         suggestions.push("请继续".to_string());
+    }
+    suggestions
+}
+
+fn parse_suggestions_from_completion(v: &serde_json::Value) -> Vec<String> {
+    let text = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim();
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(text) {
+        return arr.into_iter().filter(|s| !s.is_empty()).take(8).collect();
+    }
+    if let (Some(start), Some(end)) = (text.find('['), text.rfind(']')) {
+        if start < end {
+            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&text[start..=end]) {
+                return arr.into_iter().filter(|s| !s.is_empty()).take(8).collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
+async fn post_suggestions(
+    State(st): State<AppState>,
+    Path(thread_id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
+            .into_response();
+    };
+    let cfg = load_cached_or_default();
+    let n = body.get("n").and_then(|v| v.as_u64()).unwrap_or(4).min(8);
+    let model_name = body
+        .get("model_name")
+        .and_then(|v| v.as_str())
+        .or_else(|| cfg.models.first().map(|m| m.name.as_str()))
+        .unwrap_or("gpt-4");
+
+    let m = cfg.models.iter().find(|model| model.name == model_name).or_else(|| cfg.models.first());
+
+    let mut suggestions = Vec::new();
+    if let Some(model_cfg) = m {
+        let api_key = model_cfg
+            .api_key
+            .as_ref()
+            .map(|s| config_runtime::resolve_env_var_ref(s))
+            .filter(|s| !s.is_empty());
+        if let Some(key) = api_key {
+            let base = model_cfg
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let url = if base.contains("/v1") && !base.ends_with("/chat/completions") {
+                format!("{}/chat/completions", base.trim_end_matches('/'))
+            } else {
+                format!("{}/v1/chat/completions", base.trim_end_matches('/'))
+            };
+            let ctx = body.get("messages").cloned().unwrap_or_else(|| json!([]));
+            let sys = "You produce follow-up user suggestions. Reply with ONLY a JSON array of short question strings (same language as the user). No markdown.";
+            let user = format!(
+                "n={n}. Conversation messages JSON: {}",
+                serde_json::to_string(&ctx).unwrap_or_else(|_| "[]".to_string())
+            );
+            let chat_body = json!({
+                "model": model_cfg.model,
+                "messages": [
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": user}
+                ],
+                "temperature": 0.5,
+                "max_tokens": 400
+            });
+            if let Ok(resp) = st
+                .http_client
+                .post(&url)
+                .header("Authorization", format!("Bearer {key}"))
+                .header("Content-Type", "application/json")
+                .json(&chat_body)
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(v) = resp.json::<serde_json::Value>().await {
+                        suggestions = parse_suggestions_from_completion(&v);
+                    }
+                }
+            }
+        }
+    }
+    if suggestions.is_empty() {
+        suggestions = heuristic_suggestions(&body);
     }
     let task_path = st.local_fs_root.join("tasks").join(format!("{}.json", thread_id));
     let _ = persist_json(&task_path, &json!({"thread_id": thread_id, "suggestions": suggestions}));
