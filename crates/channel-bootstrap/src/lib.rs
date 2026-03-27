@@ -52,24 +52,28 @@ mod tests {
 
     #[test]
     fn configured_channels_uses_defaults_when_empty() {
-        let mut config = AppConfig::default();
-        config.channels = ChannelsConfig { enabled: Vec::new() };
+        let config =
+            AppConfig { channels: ChannelsConfig { enabled: Vec::new() }, ..AppConfig::default() };
         assert_eq!(configured_channels(&config), vec!["dingtalk".to_string(), "wecom".to_string()]);
     }
 
     #[test]
     fn configured_channels_filters_unknown_values() {
-        let mut config = AppConfig::default();
-        config.channels = ChannelsConfig {
-            enabled: vec!["wecom".to_string(), "unknown".to_string(), "DINGTALK".to_string()],
+        let config = AppConfig {
+            channels: ChannelsConfig {
+                enabled: vec!["wecom".to_string(), "unknown".to_string(), "DINGTALK".to_string()],
+            },
+            ..AppConfig::default()
         };
         assert_eq!(configured_channels(&config), vec!["wecom".to_string(), "dingtalk".to_string()]);
     }
 
     #[test]
     fn register_builtin_channels_registers_enabled_drivers() {
-        let mut config = AppConfig::default();
-        config.channels = ChannelsConfig { enabled: vec!["wecom".to_string()] };
+        let config = AppConfig {
+            channels: ChannelsConfig { enabled: vec!["wecom".to_string()] },
+            ..AppConfig::default()
+        };
         let mut registry = ChannelRegistry::new();
         let registered = register_builtin_channels(&mut registry, &config);
         assert_eq!(registered, vec!["wecom".to_string()]);

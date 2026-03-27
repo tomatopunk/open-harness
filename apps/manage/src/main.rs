@@ -1,15 +1,19 @@
+use app_auth::{
+    build_settings, require_auth, shared_state, update_settings, AuthContext, AuthSettings,
+    SharedAuthState,
+};
 use axum::{
     body::Body,
     extract::{Extension, Multipart, Path, Query, State},
-    http::{header, Request, StatusCode},
-    middleware::{self, Next},
+    http::{header, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use channel_bootstrap::configured_channels;
-use config_runtime::load_or_default;
+use config_runtime::{load_cached_or_default, reload_cached};
 use hmac::{Hmac, Mac};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use reqwest::Url;
@@ -24,8 +28,10 @@ use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+mod tasks;
 mod thread_delete;
 
+use tasks::{bump_task, is_terminal, prune_tasks, MAX_STREAM_CHUNKS};
 use thread_delete::ThreadDeleteEngine;
 
 #[derive(Clone)]
@@ -37,22 +43,10 @@ struct AppState {
     storage: Arc<LocalFsStateStore>,
     tasks: Arc<dashmap::DashMap<String, TaskRecord>>,
     task_capacity: usize,
-    langgraph_url: String,
+    langgraph_url: Arc<RwLock<String>>,
     http_client: reqwest::Client,
     webhook_secret: Option<String>,
-}
-
-#[derive(Clone)]
-struct AuthSettings {
-    enabled: bool,
-    api_keys: Arc<Vec<String>>,
-    bearer_tokens: Arc<Vec<String>>,
-}
-
-#[derive(Clone, Debug)]
-struct AuthContext {
-    tenant_id: String,
-    user_id: String,
+    auth_state: SharedAuthState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cfg = load_or_default();
+    let cfg = load_cached_or_default();
     let use_local_fs = cfg.storage.mode == "local_fs";
     let local_fs_root = if use_local_fs {
         PathBuf::from(&cfg.storage.local_fs_root)
@@ -159,6 +153,13 @@ async fn main() -> anyhow::Result<()> {
     let channels =
         configured_channels(&cfg).into_iter().map(|name| (name, "running".to_string())).collect();
     let storage = Arc::new(LocalFsStateStore::new(local_fs_root.clone()));
+    let auth_settings = auth_settings_from_config(
+        cfg.manage.auth.enabled,
+        cfg.manage.auth.api_keys.clone(),
+        cfg.manage.auth.bearer_tokens.clone(),
+    );
+    let auth_state =
+        shared_state(auth_settings, vec!["/healthz".to_string(), "/metrics".to_string()]);
 
     let state = AppState {
         delete_engine,
@@ -167,9 +168,10 @@ async fn main() -> anyhow::Result<()> {
         storage: storage.clone(),
         tasks: Arc::new(dashmap::DashMap::new()),
         task_capacity: 1000,
-        langgraph_url: cfg.manage.langgraph_url.clone(),
+        langgraph_url: Arc::new(RwLock::new(cfg.manage.langgraph_url.clone())),
         http_client: reqwest::Client::new(),
         webhook_secret: cfg.manage.webhook_secret.clone(),
+        auth_state: auth_state.clone(),
         store: Arc::new(RwLock::new(ManageStore {
             mcp_servers: json!({}),
             agents: HashMap::new(),
@@ -189,11 +191,6 @@ async fn main() -> anyhow::Result<()> {
             storage_mode: cfg.storage.mode.clone(),
         })),
     };
-    let auth_settings = auth_settings_from_config(
-        cfg.manage.auth.enabled,
-        cfg.manage.auth.api_keys.clone(),
-        cfg.manage.auth.bearer_tokens.clone(),
-    );
     bootstrap_storage(&state).await;
 
     let app = Router::new()
@@ -235,8 +232,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/manage/tasks/:task_id", get(get_task))
         .route("/api/manage/tasks/:task_id/stream", get(stream_task))
         .route("/api/manage/admin/storage/switch", post(storage_switch))
+        .route("/api/manage/admin/config/reload", post(reload_config))
         .with_state(state)
-        .layer(middleware::from_fn_with_state(auth_settings, require_auth))
+        .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.manage.bind).await?;
@@ -287,85 +285,11 @@ fn auth_settings_from_config(
     api_keys: Vec<String>,
     bearer_tokens: Vec<String>,
 ) -> AuthSettings {
-    AuthSettings { enabled, api_keys: Arc::new(api_keys), bearer_tokens: Arc::new(bearer_tokens) }
-}
-
-fn is_public_path(path: &str) -> bool {
-    path == "/healthz" || path == "/metrics"
-}
-
-fn parse_bearer(value: &str) -> Option<&str> {
-    value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))
-}
-
-fn extract_auth_context(req: &Request<Body>) -> AuthContext {
-    let tenant_id = req
-        .headers()
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("default")
-        .to_string();
-    let user_id = req
-        .headers()
-        .get("x-user-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
-    AuthContext { tenant_id, user_id }
-}
-
-fn is_authorized(req: &Request<Body>, settings: &AuthSettings) -> bool {
-    if let Some(v) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
-        if settings.api_keys.iter().any(|k| k == v) {
-            return true;
-        }
-    }
-    if let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        if let Some(token) = parse_bearer(v) {
-            if settings.bearer_tokens.iter().any(|k| k == token) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-async fn require_auth(
-    State(settings): State<AuthSettings>,
-    mut req: Request<Body>,
-    next: Next,
-) -> axum::response::Response {
-    if is_public_path(req.uri().path()) {
-        return next.run(req).await;
-    }
-    if settings.enabled && !is_authorized(&req, &settings) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })))
-            .into_response();
-    }
-    let auth_ctx = extract_auth_context(&req);
-    req.extensions_mut().insert(auth_ctx);
-    next.run(req).await
+    build_settings(enabled, api_keys, bearer_tokens)
 }
 
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
-}
-
-fn is_terminal(status: &TaskStatus) -> bool {
-    matches!(status, TaskStatus::Completed | TaskStatus::Failed)
-}
-
-fn prune_tasks(tasks: &dashmap::DashMap<String, TaskRecord>, capacity: usize) {
-    if tasks.len() <= capacity {
-        return;
-    }
-    let mut entries: Vec<(String, i64)> =
-        tasks.iter().map(|v| (v.key().clone(), v.value().updated_at)).collect();
-    entries.sort_by_key(|(_, ts)| *ts);
-    let remove_n = entries.len().saturating_sub(capacity);
-    for (task_id, _) in entries.into_iter().take(remove_n) {
-        tasks.remove(&task_id);
-    }
 }
 
 fn sign_payload(secret: &str, body: &str, timestamp: i64, nonce: &str) -> Option<String> {
@@ -418,31 +342,6 @@ async fn post_webhook(st: &AppState, task: &TaskRecord) {
             tracing::warn!(task_id = %task.task_id, error = %err, "webhook call error");
         }
     }
-}
-
-fn bump_task(
-    st: &AppState,
-    task_id: &str,
-    status: TaskStatus,
-    output: Option<String>,
-    error: Option<String>,
-) -> Option<TaskRecord> {
-    let mut updated = st.tasks.get(task_id)?.clone();
-    updated.status = status;
-    updated.updated_at = now_ts();
-    updated.version += 1;
-    if let Some(chunk) = output {
-        updated.output_chunks.push(chunk);
-        if updated.output_chunks.len() > 200 {
-            let drain_n = updated.output_chunks.len().saturating_sub(200);
-            updated.output_chunks.drain(0..drain_n);
-        }
-    }
-    if error.is_some() {
-        updated.error = error;
-    }
-    st.tasks.insert(task_id.to_string(), updated.clone());
-    Some(updated)
 }
 
 async fn dispatch_task(
@@ -531,10 +430,11 @@ async fn run_task_worker(
         return;
     };
     post_webhook(&st, &task).await;
+    let langgraph_url = st.langgraph_url.read().await.clone();
     let run_url = if body.stream {
-        format!("{}/threads/{thread_id}/runs/stream", st.langgraph_url.trim_end_matches('/'))
+        format!("{}/threads/{thread_id}/runs/stream", langgraph_url.trim_end_matches('/'))
     } else {
-        format!("{}/threads/{thread_id}/runs", st.langgraph_url.trim_end_matches('/'))
+        format!("{}/threads/{thread_id}/runs", langgraph_url.trim_end_matches('/'))
     };
     let run_req = json!({
         "input": body.input,
@@ -547,12 +447,27 @@ async fn run_task_worker(
         match st.http_client.post(run_url).json(&run_req).send().await {
             Ok(resp) if resp.status().is_success() => {
                 let mut stream = resp.bytes_stream();
-                let mut total = 0usize;
+                let mut total = 0_usize;
                 while let Some(next) = futures::StreamExt::next(&mut stream).await {
                     match next {
                         Ok(chunk) => {
-                            if total > 256 {
-                                continue;
+                            if total >= MAX_STREAM_CHUNKS {
+                                let failed = bump_task(
+                                    &st,
+                                    &task_id,
+                                    TaskStatus::Failed,
+                                    None,
+                                    Some(format!(
+                                        "stream output exceeded chunk limit {}",
+                                        MAX_STREAM_CHUNKS
+                                    )),
+                                );
+                                if let Some(task) = failed {
+                                    metrics::counter!("open_harness_manage_task_failed_total")
+                                        .increment(1);
+                                    post_webhook(&st, &task).await;
+                                }
+                                return;
                             }
                             let payload = String::from_utf8_lossy(&chunk).to_string();
                             let _ =
@@ -679,6 +594,43 @@ async fn storage_switch(
         s.storage_mode = body.backend.clone();
     }
     (StatusCode::OK, Json(StorageSwitchResponse { backend: body.backend, applied }))
+}
+
+async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
+    match reload_cached() {
+        Ok(cfg) => {
+            *st.langgraph_url.write().await = cfg.manage.langgraph_url.clone();
+            update_settings(
+                &st.auth_state,
+                auth_settings_from_config(
+                    cfg.manage.auth.enabled,
+                    cfg.manage.auth.api_keys.clone(),
+                    cfg.manage.auth.bearer_tokens.clone(),
+                ),
+            )
+            .await;
+            let mut store = st.store.write().await;
+            store.models = cfg
+                .models
+                .iter()
+                .map(|m| ModelInfo {
+                    name: m.name.clone(),
+                    model: m.model.clone(),
+                    display_name: m.display_name.clone(),
+                    description: format!("provider: {}", m.use_provider),
+                    supports_thinking: false,
+                    supports_reasoning_effort: false,
+                })
+                .collect();
+            store.storage_mode = cfg.storage.mode;
+            (StatusCode::OK, Json(json!({"reloaded": true}))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"reloaded": false, "error": err.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_models(State(st): State<AppState>) -> impl IntoResponse {

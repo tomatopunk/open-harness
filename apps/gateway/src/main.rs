@@ -1,43 +1,41 @@
+use app_auth::{
+    build_settings, require_auth, shared_state, update_settings, AuthContext, AuthSettings,
+    SharedAuthState,
+};
 use axum::{
     body::Body,
     extract::{Extension, State},
     http::{header, Request, StatusCode},
-    middleware::{self, Next},
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
-use config_runtime::{load_or_default, resolve_env_var_ref, AuthConfig, ModelConfig};
+use config_runtime::{load_cached_or_default, reload_cached, AuthConfig, ModelConfig};
 use dashmap::DashMap;
 use metrics_exporter_prometheus::PrometheusBuilder;
-use protocol_compat::{
-    OpenAiChatCompletionsRequest, OpenAiModelItem, OpenAiModelsResponse, ThreadCreate,
-};
+use protocol_compat::{OpenAiChatCompletionsRequest, OpenAiModelItem, OpenAiModelsResponse};
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+mod chat_support;
+
+use chat_support::{
+    conversation_cache_key, ensure_thread, extract_assistant_text, extract_assistant_texts,
+    map_upstream_status, model_api_key,
+};
+
 #[derive(Clone)]
 struct AppState {
-    langgraph_upstream: String,
+    langgraph_upstream: Arc<RwLock<String>>,
     client: reqwest::Client,
     conversation_map: Arc<DashMap<String, String>>,
-    models: Vec<ModelConfig>,
-}
-
-#[derive(Clone)]
-struct AuthSettings {
-    enabled: bool,
-    api_keys: Arc<Vec<String>>,
-    bearer_tokens: Arc<Vec<String>>,
-}
-
-#[derive(Clone, Debug)]
-struct AuthContext {
-    tenant_id: String,
-    user_id: String,
+    models: Arc<RwLock<Vec<ModelConfig>>>,
+    auth_state: SharedAuthState,
 }
 
 #[tokio::main]
@@ -49,21 +47,25 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cfg = load_or_default();
+    let cfg = load_cached_or_default();
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_gateway_requests_total", "Total proxied requests");
+    let auth_settings = auth_settings_from_config(&cfg.gateway.auth);
+    let auth_state =
+        shared_state(auth_settings, vec!["/healthz".to_string(), "/metrics".to_string()]);
     let state = AppState {
-        langgraph_upstream: cfg.gateway.langgraph_upstream.clone(),
+        langgraph_upstream: Arc::new(RwLock::new(cfg.gateway.langgraph_upstream.clone())),
         client: reqwest::Client::new(),
         conversation_map: Arc::new(DashMap::new()),
-        models: cfg.models.clone(),
+        models: Arc::new(RwLock::new(cfg.models.clone())),
+        auth_state: auth_state.clone(),
     };
-    let auth_settings = auth_settings_from_config(&cfg.gateway.auth);
 
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/v1/models", get(openai_models))
         .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/api/admin/config/reload", post(reload_config))
         .route(
             "/metrics",
             get(move || {
@@ -74,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/langgraph/demo-stream", get(demo_stream))
         .fallback(proxy_langgraph)
         .with_state(state)
-        .layer(middleware::from_fn_with_state(auth_settings, require_auth))
+        .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.gateway.bind).await?;
@@ -98,8 +100,8 @@ async fn demo_stream() -> impl IntoResponse {
 
 async fn openai_models(State(st): State<AppState>) -> impl IntoResponse {
     let now = Utc::now().timestamp();
-    let data = st
-        .models
+    let models = st.models.read().await;
+    let data = models
         .iter()
         .map(|m| OpenAiModelItem {
             id: m.name.clone(),
@@ -118,7 +120,8 @@ async fn openai_chat_completions(
 ) -> Response {
     let request_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
     let stream = body.stream.unwrap_or(false);
-    if !st.models.iter().any(|m| m.name == body.model) {
+    let models = st.models.read().await.clone();
+    if !models.iter().any(|m| m.name == body.model) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("unknown model {}", body.model) })),
@@ -127,7 +130,7 @@ async fn openai_chat_completions(
     }
 
     let mut configurable = body.configurable.clone().unwrap_or_default();
-    let thread_key = body.user.clone().unwrap_or_else(|| "default".to_string());
+    let thread_key = conversation_cache_key(&auth_ctx, body.user.as_deref());
     let thread_id = configurable.thread_id.clone().unwrap_or_else(|| {
         st.conversation_map
             .entry(thread_key.clone())
@@ -159,34 +162,33 @@ async fn openai_chat_completions(
 
     configurable.thread_id = Some(thread_id.clone());
     configurable.model_name = Some(body.model.clone());
-    configurable.api_key = model_api_key(&st.models, &body.model);
+    configurable.api_key = model_api_key(&models, &body.model);
     configurable.thinking_enabled.get_or_insert(false);
     configurable.is_plan_mode.get_or_insert(false);
     configurable.subagent_enabled.get_or_insert(false);
     configurable.skills_enabled.get_or_insert(true);
     configurable.sandbox_enabled.get_or_insert(false);
-    let stream_mode = body.stream_mode.clone().unwrap_or_else(|| {
-        vec![
-            "values".to_string(),
-            "messages-tuple".to_string(),
-            "end".to_string(),
-            "error".to_string(),
-        ]
-    });
-
-    let run_req = json!({
+    let mut run_req = json!({
         "input": input,
         "config": {
             "configurable": configurable
-        },
-        "stream_mode": stream_mode
+        }
     });
+    if stream {
+        let stream_mode = body.stream_mode.clone().unwrap_or_else(|| {
+            vec![
+                "values".to_string(),
+                "messages-tuple".to_string(),
+                "end".to_string(),
+                "error".to_string(),
+            ]
+        });
+        run_req["stream_mode"] = json!(stream_mode);
+    }
 
-    let url = format!(
-        "{}/threads/{}/runs/stream",
-        st.langgraph_upstream.trim_end_matches('/'),
-        thread_id
-    );
+    let run_path = if stream { "runs/stream" } else { "runs" };
+    let upstream = st.langgraph_upstream.read().await.clone();
+    let url = format!("{}/threads/{thread_id}/{run_path}", upstream.trim_end_matches('/'));
     let upstream = match st.client.post(&url).json(&run_req).send().await {
         Ok(r) => r,
         Err(e) => {
@@ -196,12 +198,10 @@ async fn openai_chat_completions(
     };
 
     if !upstream.status().is_success() {
-        let status = upstream.status();
+        let upstream_status = upstream.status();
+        let mapped_status = map_upstream_status(upstream_status);
         let body = upstream.text().await.unwrap_or_else(|_| "upstream error".into());
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "status": status.as_u16(), "error": body })),
-        )
+        return (mapped_status, Json(json!({ "status": upstream_status.as_u16(), "error": body })))
             .into_response();
     }
 
@@ -301,125 +301,16 @@ async fn openai_chat_completions(
 }
 
 fn auth_settings_from_config(cfg: &AuthConfig) -> AuthSettings {
-    AuthSettings {
-        enabled: cfg.enabled,
-        api_keys: Arc::new(cfg.api_keys.clone()),
-        bearer_tokens: Arc::new(cfg.bearer_tokens.clone()),
-    }
-}
-
-fn is_public_path(path: &str) -> bool {
-    path == "/healthz" || path == "/metrics"
-}
-
-fn parse_bearer(value: &str) -> Option<&str> {
-    value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))
-}
-
-fn extract_auth_context(req: &Request<Body>) -> AuthContext {
-    let tenant_id = req
-        .headers()
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("default")
-        .to_string();
-    let user_id = req
-        .headers()
-        .get("x-user-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
-    AuthContext { tenant_id, user_id }
-}
-
-fn is_authorized(req: &Request<Body>, settings: &AuthSettings) -> bool {
-    if let Some(v) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
-        if settings.api_keys.iter().any(|k| k == v) {
-            return true;
-        }
-    }
-    if let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        if let Some(token) = parse_bearer(v) {
-            if settings.bearer_tokens.iter().any(|k| k == token) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-async fn require_auth(
-    State(settings): State<AuthSettings>,
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
-    if is_public_path(req.uri().path()) {
-        return next.run(req).await;
-    }
-    if settings.enabled && !is_authorized(&req, &settings) {
-        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })))
-            .into_response();
-    }
-    let auth_ctx = extract_auth_context(&req);
-    req.extensions_mut().insert(auth_ctx);
-    next.run(req).await
-}
-
-fn model_api_key(models: &[ModelConfig], model_name: &str) -> Option<String> {
-    models
-        .iter()
-        .find(|m| m.name == model_name)
-        .and_then(|m| m.api_key.as_ref())
-        .map(|v| resolve_env_var_ref(v))
-}
-
-fn extract_assistant_text(payload: &str) -> Option<String> {
-    extract_assistant_texts(payload).into_iter().next()
-}
-
-fn extract_assistant_texts(payload: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in payload.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("data:") {
-            continue;
-        }
-        let data = trimmed.trim_start_matches("data:").trim();
-        if data == "[DONE]" {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-            if let Some(content) =
-                v.get("data").and_then(|d| d.get("content")).and_then(|c| c.as_str())
-            {
-                out.push(content.to_string());
-                continue;
-            }
-            if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                out.push(content.to_string());
-            }
-        }
-    }
-    out
-}
-
-async fn ensure_thread(st: &AppState, thread_id: &str) -> Result<(), String> {
-    let url = format!("{}/threads", st.langgraph_upstream.trim_end_matches('/'));
-    let body = ThreadCreate { thread_id: Some(thread_id.to_string()), metadata: None };
-    let resp = st.client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
-    if resp.status().is_success() || resp.status().as_u16() == 409 {
-        Ok(())
-    } else {
-        Err(format!("thread create failed {}", resp.status()))
-    }
+    build_settings(cfg.enabled, cfg.api_keys.clone(), cfg.bearer_tokens.clone())
 }
 
 async fn proxy_langgraph(State(st): State<AppState>, req: Request<Body>) -> impl IntoResponse {
     metrics::counter!("open_harness_gateway_requests_total").increment(1);
+    let upstream = st.langgraph_upstream.read().await.clone();
     let path_and_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let prefix = "/api/langgraph";
     let rest = path_and_query.strip_prefix(prefix).unwrap_or(path_and_query);
-    let target = format!("{}{}", st.langgraph_upstream.trim_end_matches('/'), rest);
+    let target = format!("{}{}", upstream.trim_end_matches('/'), rest);
 
     let method = req.method().clone();
     let headers = req.headers().clone();
@@ -458,4 +349,20 @@ async fn proxy_langgraph(State(st): State<AppState>, req: Request<Body>) -> impl
     };
     res.body(Body::from(bytes))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build").into_response())
+}
+
+async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
+    match reload_cached() {
+        Ok(cfg) => {
+            *st.models.write().await = cfg.models;
+            *st.langgraph_upstream.write().await = cfg.gateway.langgraph_upstream;
+            update_settings(&st.auth_state, auth_settings_from_config(&cfg.gateway.auth)).await;
+            (StatusCode::OK, Json(json!({"reloaded": true}))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"reloaded": false, "error": err.to_string()})),
+        )
+            .into_response(),
+    }
 }
