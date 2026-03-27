@@ -14,8 +14,11 @@ axum = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+config-runtime = { path = "../../crates/config-runtime" }
 channel-runtime = { path = "../../crates/channel-runtime" }
 channel-dingtalk = { path = "../../crates/channel-dingtalk" }
 channel-wecom = { path = "../../crates/channel-wecom" }

@@ -163,6 +163,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "rustversion",
@@ -1761,6 +1762,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin",
+ "version_check",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1943,6 +1961,9 @@ dependencies = [
  "channel-dingtalk",
  "channel-runtime",
  "channel-wecom",
+ "config-runtime",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tower-http 0.5.2",
@@ -1957,7 +1978,10 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "chrono",
  "config-runtime",
+ "dashmap",
+ "futures",
  "http",
  "metrics",
  "metrics-exporter-prometheus",
@@ -1970,6 +1994,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -2006,9 +2031,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "config-runtime",
  "orchestrator-core",
  "protocol-compat",
+ "serde",
  "serde_json",
+ "state-abstraction",
  "tokio",
  "tower-http 0.5.2",
  "tracing",

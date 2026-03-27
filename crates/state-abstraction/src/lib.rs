@@ -2,8 +2,10 @@
 
 pub mod registry;
 pub mod traits;
+pub mod local_fs;
 
 pub use registry::{StorageBackendKind, StorageRegistry};
+pub use local_fs::LocalFsLayout;
 pub use traits::{
     ArtifactStore, CheckpointBlob, CheckpointStore, MemoryStore, StateError, ThreadMeta,
     ThreadMetaStore,

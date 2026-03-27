@@ -1,11 +1,28 @@
-use axum::{routing::get, routing::post, Json, Router};
+use axum::{
+    extract::{Path, State},
+    routing::get,
+    routing::post,
+    Json, Router,
+};
 use channel_dingtalk::DingTalkDriver;
-use channel_runtime::ChannelDriver;
+use channel_runtime::ChannelRegistry;
 use channel_wecom::WeComDriver;
+use config_runtime::load_or_default;
+use reqwest::Client;
+use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
+
+#[derive(Clone)]
+struct AppState {
+    registry: Arc<ChannelRegistry>,
+    gateway_url: String,
+    client: Client,
+    model_name: String,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,20 +37,29 @@ async fn main() -> anyhow::Result<()> {
         secret: std::env::var("DINGTALK_SECRET").unwrap_or_else(|_| "dev".into()),
     };
 
+    let mut registry = ChannelRegistry::new();
+    registry.register(Box::new(ding.clone()));
+    registry.register(Box::new(WeComDriver));
+    let cfg = load_or_default();
+    let model_name = cfg
+        .models
+        .first()
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "gpt-4".to_string());
+
+    let state = AppState {
+        registry: Arc::new(registry),
+        gateway_url: std::env::var("OPEN_HARNESS_CHANNEL__GATEWAY_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
+        client: Client::new(),
+        model_name,
+    };
+
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route(
-            "/hooks/dingtalk",
-            post({
-                let ding = ding.clone();
-                move |body: String| {
-                    let ding = ding.clone();
-                    async move { dingtalk_hook(ding, body).await }
-                }
-            }),
-        )
-        .route("/hooks/wecom", post(wecom_hook))
+        .route("/hooks/:platform", post(channel_hook))
         .layer(TraceLayer::new_for_http());
+    let app = app.with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8082".parse()?;
     tracing::info!("open-harness-channel on {addr}");
@@ -42,19 +68,76 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn dingtalk_hook(ding: DingTalkDriver, body: String) -> Json<serde_json::Value> {
-    let headers = HashMap::new();
-    let _ = ding.verify_signature(&headers, body.as_bytes()).await;
-    let env = ding.parse_event(body.as_bytes()).await.unwrap();
-    let cmd = ding.normalize_command(&env).await.unwrap();
-    Json(json!({ "envelope": env, "command": cmd }))
+#[derive(Serialize)]
+struct HookResponse {
+    platform: String,
+    delivered: bool,
+    reply: String,
 }
 
-async fn wecom_hook(body: String) -> Json<serde_json::Value> {
-    let wecom = WeComDriver;
+async fn channel_hook(
+    State(st): State<AppState>,
+    Path(platform): Path<String>,
+    body: String,
+) -> Json<serde_json::Value> {
+    let Some(driver) = st.registry.get(&platform) else {
+        return Json(json!({"error": "platform_not_supported"}));
+    };
     let headers = HashMap::new();
-    let _ = wecom.verify_signature(&headers, body.as_bytes()).await;
-    let env = wecom.parse_event(body.as_bytes()).await.unwrap();
-    let cmd = wecom.normalize_command(&env).await.unwrap();
-    Json(json!({ "envelope": env, "command": cmd }))
+    if driver.verify_signature(&headers, body.as_bytes()).await.is_err() {
+        return Json(json!({"error": "invalid_signature"}));
+    }
+    let env = match driver.parse_event(body.as_bytes()).await {
+        Ok(v) => v,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+    let cmd = match driver.normalize_command(&env).await {
+        Ok(v) => v,
+        Err(e) => return Json(json!({"error": e.to_string()})),
+    };
+
+    let prompt = match cmd.command.as_str() {
+        "chat" => env.text.clone().unwrap_or_default(),
+        _ => format!("{} {}", cmd.command, cmd.args.join(" ")),
+    };
+    let thread_key = cmd
+        .thread_hint
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", platform, env.chat_id));
+    let gateway = if st.gateway_url.starts_with("http") {
+        st.gateway_url.clone()
+    } else {
+        format!("http://{}", st.gateway_url)
+    };
+    let result = st
+        .client
+        .post(format!("{gateway}/v1/chat/completions"))
+        .json(&json!({
+            "model": st.model_name,
+            "messages": [{"role":"user","content": prompt}],
+            "user": thread_key,
+            "stream": false
+        }))
+        .send()
+        .await;
+    let reply = match result {
+        Ok(resp) => {
+            let v = resp.json::<serde_json::Value>().await.unwrap_or_else(|_| json!({}));
+            v.get("choices")
+                .and_then(|c| c.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("ok")
+                .to_string()
+        }
+        Err(e) => format!("gateway_error: {e}"),
+    };
+    let _ = driver.send_message(&env.chat_id, &reply).await;
+    Json(json!(HookResponse {
+        platform,
+        delivered: true,
+        reply
+    }))
 }
