@@ -41,6 +41,9 @@ echo "== storage switch stub"
 curl -fsS -X POST "$MANAGE/api/manage/admin/storage/switch" \
   -H 'Content-Type: application/json' \
   -d '{"backend":"sqlite"}'
+echo ""
+echo "== storage runtime status"
+curl -fsS "$MANAGE/api/manage/admin/storage/status"
 
 echo ""
 echo "== channel hooks"
@@ -56,6 +59,13 @@ echo "== manage core APIs"
 curl -fsS "$MANAGE/api/models"
 echo ""
 curl -fsS "$MANAGE/api/skills"
+echo ""
+echo "== mcp oauth status"
+curl -fsS "$MANAGE/api/mcp/oauth/status"
+echo ""
+echo "== install skill archive"
+curl -fsS -X POST "$MANAGE/api/skills/install" -H 'Content-Type: application/json' \
+  -d '{"archive_name":"demo.skill","enabled":true}'
 echo ""
 curl -fsS "$MANAGE/api/channels/"
 echo ""

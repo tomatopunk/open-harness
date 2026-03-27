@@ -42,6 +42,7 @@ app-auth = { path = "../../crates/app-auth" }
 state-abstraction = { path = "../../crates/state-abstraction" }
 storage-sqlite = { path = "../../crates/storage-sqlite" }
 storage-postgres = { path = "../../crates/storage-postgres" }
+runtime-kernel = { path = "../../crates/runtime-kernel" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 

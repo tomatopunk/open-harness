@@ -1,9 +1,11 @@
 use axum::{routing::get, routing::post, Json, Router};
 use config_runtime::load_or_default;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
 use runtime_kernel::RuntimeEvent;
 use runtime_llm_chain_adapter::LlmChainAdapter;
+use sandbox_runtime::{LocalSandbox, Sandbox, SandboxRequest};
 use serde::Deserialize;
 use serde_json::json;
 use state_abstraction::{
@@ -96,35 +98,59 @@ async fn run_orchestrate_with_state(
             created_at: chrono::Utc::now(),
         })
         .await;
+    metrics::counter!("open_harness_orchestrator_tool_record_total").increment(1);
 
     if body.configurable.sandbox_enabled.unwrap_or(false) {
+        let sandbox = LocalSandbox;
+        let sb_out = sandbox
+            .exec(SandboxRequest::new("echo prepare_runtime", std::time::Duration::from_secs(2)))
+            .await;
+        let (exit_code, stdout, stderr) = match sb_out {
+            Ok(out) => (out.exit_code, out.stdout, out.stderr),
+            Err(err) => (-1, String::new(), err.to_string()),
+        };
         let _ = st
             .store
             .append_execution(&SandboxExecution {
                 execution_id: Uuid::new_v4(),
                 thread_id,
                 command: "prepare_runtime".to_string(),
-                exit_code: 0,
-                stdout: "sandbox simulated".to_string(),
-                stderr: String::new(),
+                exit_code,
+                stdout,
+                stderr,
                 created_at: chrono::Utc::now(),
             })
             .await;
+        metrics::counter!("open_harness_orchestrator_sandbox_execution_total").increment(1);
     }
 
     if body.configurable.subagent_enabled.unwrap_or(false) {
         let max_subagents = body.configurable.max_concurrent_subagents.unwrap_or(1);
+        let output = match runtime_kernel::RuntimeKernel::default()
+            .execute_subagent(format!("max_concurrent_subagents:{max_subagents}"))
+            .await
+        {
+            Ok(out) => json!({
+                "status": out.status,
+                "output": out.output
+            }),
+            Err(err) => json!({
+                "status": "failed",
+                "error": err.to_string()
+            }),
+        };
         let task = SubagentTask {
             task_id: Uuid::new_v4(),
             thread_id,
             agent_name: "general".to_string(),
             status: "completed".to_string(),
             input: json!({"max_concurrent_subagents": max_subagents}),
-            output: Some(json!({"result":"ok"})),
+            output: Some(output),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };
         let _ = st.store.upsert_task(&task).await;
+        metrics::counter!("open_harness_orchestrator_subagent_task_total").increment(1);
     }
 
     let facts = st.store.list_facts(thread_id).await.unwrap_or_default();
@@ -159,6 +185,19 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cfg = load_or_default();
+    let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
+    metrics::describe_counter!(
+        "open_harness_orchestrator_tool_record_total",
+        "orchestrator tool records persisted"
+    );
+    metrics::describe_counter!(
+        "open_harness_orchestrator_sandbox_execution_total",
+        "orchestrator sandbox executions persisted"
+    );
+    metrics::describe_counter!(
+        "open_harness_orchestrator_subagent_task_total",
+        "orchestrator subagent tasks persisted"
+    );
     if cfg.storage.mode == "local_fs" {
         let layout = LocalFsLayout::new(&cfg.storage.local_fs_root);
         let _ = layout.ensure_base_dirs();
@@ -174,11 +213,19 @@ async fn main() -> anyhow::Result<()> {
                 "info": {"title": "open-harness-orchestrator", "version": "0.1.0"},
                 "paths": {
                     "/healthz": {"get": {"summary": "Health check"}},
+                    "/metrics": {"get": {"summary": "Prometheus metrics"}},
                     "/internal/pipeline-check": {"post": {"summary": "Check runtime pipeline"}},
                     "/internal/orchestrate": {"post": {"summary": "Run orchestration and persist state"}}
                 }
             }))
         }))
+        .route(
+            "/metrics",
+            get(move || {
+                let p = prom.clone();
+                async move { p.render() }
+            }),
+        )
         .route("/internal/pipeline-check", post(pipeline_check))
         .route("/internal/orchestrate", post(run_orchestrate_with_state))
         .layer(TraceLayer::new_for_http());

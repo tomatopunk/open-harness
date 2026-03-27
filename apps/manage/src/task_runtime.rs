@@ -107,7 +107,8 @@ async fn persist_task_record(st: &AppState, task: &TaskRecord) {
         tracing::warn!(task_id = %task.task_id, "skip persistence due to invalid task timestamp/version");
         return;
     };
-    if let Err(err) = st.manage_tasks.upsert_task(&record).await {
+    let manage_tasks = { st.storage_runtime.read().await.manage_tasks.clone() };
+    if let Err(err) = manage_tasks.upsert_task(&record).await {
         tracing::warn!(task_id = %task.task_id, error = %err, "persist manage task failed");
     }
 }
@@ -227,7 +228,8 @@ async fn fetch_task_record(st: &AppState, task_id: &str) -> Option<TaskRecord> {
     if let Some(task) = st.tasks.get(task_id) {
         return Some(task.clone());
     }
-    match st.manage_tasks.get_task(task_id).await {
+    let manage_tasks = { st.storage_runtime.read().await.manage_tasks.clone() };
+    match manage_tasks.get_task(task_id).await {
         Ok(Some(record)) => {
             let Some(converted) = store_record_to_task(record) else {
                 tracing::warn!(task_id, "invalid persisted task record");

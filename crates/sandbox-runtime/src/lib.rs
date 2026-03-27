@@ -4,4 +4,4 @@ pub mod error;
 pub mod traits;
 
 pub use error::SandboxError;
-pub use traits::Sandbox;
+pub use traits::{LocalSandbox, Sandbox, SandboxOutput, SandboxRequest};

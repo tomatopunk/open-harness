@@ -6,4 +6,8 @@ pub enum SandboxError {
     Docker(String),
     #[error("unsupported: {0}")]
     Unsupported(String),
+    #[error("execution: {0}")]
+    Execution(String),
+    #[error("timeout")]
+    Timeout,
 }

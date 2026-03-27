@@ -14,6 +14,8 @@ pub struct MiddlewareContext {
     pub tool_calls: Vec<ToolInvocation>,
     pub loop_detected: bool,
     pub token_usage_estimate: usize,
+    pub warnings: Vec<String>,
+    pub blocked_tools: Vec<String>,
 }
 
 #[async_trait]
@@ -76,7 +78,23 @@ impl Middleware for TodoMiddleware {
         }
         ctx.token_usage_estimate =
             ctx.messages.iter().filter_map(Value::as_str).map(str::len).sum::<usize>();
-        ctx.loop_detected = ctx.messages.windows(2).any(|w| w[0] == w[1]);
+        Ok(())
+    }
+}
+
+pub struct LoopDetectionMiddleware;
+#[async_trait]
+impl Middleware for LoopDetectionMiddleware {
+    fn name(&self) -> &'static str {
+        "loop_detection"
+    }
+
+    async fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), RuntimeError> {
+        let repeated = ctx.messages.windows(2).any(|w| w[0] == w[1]);
+        if repeated {
+            ctx.loop_detected = true;
+            ctx.warnings.push("loop_detected: repeated adjacent messages".to_string());
+        }
         Ok(())
     }
 }
@@ -119,6 +137,45 @@ impl Middleware for ClarificationMiddleware {
     async fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), RuntimeError> {
         if ctx.messages.is_empty() {
             return Err(RuntimeError::InvalidInput("messages is empty".to_string()));
+        }
+        Ok(())
+    }
+}
+
+pub struct ToolErrorHandlingMiddleware;
+#[async_trait]
+impl Middleware for ToolErrorHandlingMiddleware {
+    fn name(&self) -> &'static str {
+        "tool_error_handling"
+    }
+
+    async fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), RuntimeError> {
+        if ctx.loop_detected {
+            ctx.warnings.push("loop_detected: tool execution may be skipped".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub struct GuardrailsMiddleware;
+#[async_trait]
+impl Middleware for GuardrailsMiddleware {
+    fn name(&self) -> &'static str {
+        "guardrails"
+    }
+
+    async fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), RuntimeError> {
+        let sandbox_enabled = ctx.configurable.sandbox_enabled.unwrap_or(false);
+        if !sandbox_enabled {
+            let mut kept = Vec::with_capacity(ctx.tool_calls.len());
+            for call in ctx.tool_calls.drain(..) {
+                if call.tool_name == "read_file" {
+                    kept.push(call);
+                } else {
+                    ctx.blocked_tools.push(call.tool_name);
+                }
+            }
+            ctx.tool_calls = kept;
         }
         Ok(())
     }

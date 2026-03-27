@@ -12,6 +12,7 @@ use axum::{
 use channel_bootstrap::configured_channels;
 use config_runtime::{load_cached_or_default, reload_cached};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use runtime_kernel::{McpServerConfig, SkillsRuntime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_yaml::Value as YamlValue;
@@ -19,6 +20,7 @@ use state_abstraction::{
     LocalFsStateStore, ManageTaskStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use storage_postgres::PostgresManageTaskStore;
 use tokio::sync::RwLock;
 use tokio_util::task::TaskTracker;
 use tower_http::trace::TraceLayer;
@@ -42,7 +44,7 @@ struct AppState {
     local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
     storage: Arc<LocalFsStateStore>,
-    manage_tasks: Arc<dyn ManageTaskStore>,
+    storage_runtime: Arc<RwLock<StorageRuntime>>,
     tasks: Arc<dashmap::DashMap<String, TaskRecord>>,
     task_capacity: usize,
     langgraph_url: Arc<RwLock<String>>,
@@ -50,6 +52,15 @@ struct AppState {
     webhook_secret: Option<String>,
     auth_state: SharedAuthState,
     task_workers: TaskTracker,
+    skills_install_dir: PathBuf,
+}
+
+#[derive(Clone)]
+struct StorageRuntime {
+    active_mode: String,
+    manage_tasks: Arc<dyn ManageTaskStore>,
+    capabilities: serde_json::Value,
+    last_switch_ts: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +130,14 @@ async fn main() -> anyhow::Result<()> {
         "Manage webhook failure"
     );
     metrics::describe_counter!("open_harness_manage_shutdown_total", "Manage graceful shutdown");
+    metrics::describe_counter!(
+        "open_harness_manage_storage_switch_total",
+        "Manage storage switch operations"
+    );
+    metrics::describe_counter!(
+        "open_harness_manage_storage_switch_failed_total",
+        "Manage storage switch failed operations"
+    );
 
     let channels =
         configured_channels(&cfg).into_iter().map(|name| (name, "running".to_string())).collect();
@@ -136,7 +155,12 @@ async fn main() -> anyhow::Result<()> {
         threads_root: threads_root.clone(),
         local_fs_root: local_fs_root.clone(),
         storage: storage.clone(),
-        manage_tasks: storage.clone(),
+        storage_runtime: Arc::new(RwLock::new(StorageRuntime {
+            active_mode: cfg.storage.mode.clone(),
+            manage_tasks: storage.clone(),
+            capabilities: storage_capabilities("local_fs"),
+            last_switch_ts: now_ts(),
+        })),
         tasks: Arc::new(dashmap::DashMap::new()),
         task_capacity: 1000,
         langgraph_url,
@@ -144,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
         webhook_secret: cfg.manage.webhook_secret.clone(),
         auth_state: auth_state.clone(),
         task_workers: TaskTracker::new(),
+        skills_install_dir: local_fs_root.join("skills"),
         store: Arc::new(RwLock::new(ManageStore {
             mcp_servers: json!({}),
             agents: HashMap::new(),
@@ -179,11 +204,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/models", get(list_models))
         .route("/api/models/:model_name", get(get_model))
         .route("/api/mcp/config", get(get_mcp_config).put(put_mcp_config))
+        .route("/api/mcp/oauth/status", get(get_mcp_oauth_status))
         .route("/api/memory", get(get_memory))
         .route("/api/memory/reload", post(reload_memory))
         .route("/api/memory/config", get(get_memory_config))
         .route("/api/memory/status", get(get_memory_status))
         .route("/api/skills", get(list_skills))
+        .route("/api/skills/install", post(install_skill_archive))
         .route("/api/skills/:skill_name", get(get_skill).put(update_skill))
         .route("/api/threads/:thread_id", axum::routing::delete(delete_thread_plain))
         .route("/api/threads/:thread_id/uploads", post(upload_thread_files))
@@ -206,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/manage/tasks/:task_id", get(get_task))
         .route("/api/manage/tasks/:task_id/stream", get(stream_task))
         .route("/api/manage/admin/storage/switch", post(storage_switch))
+        .route("/api/manage/admin/storage/status", get(storage_status))
         .route("/api/manage/admin/config/reload", post(reload_config))
         .with_state(state)
         .layer(middleware::from_fn_with_state(auth_state, require_auth))
@@ -237,10 +265,13 @@ async fn openapi_spec() -> impl IntoResponse {
             "/healthz": {"get": {"summary": "Health check"}},
             "/api/models": {"get": {"summary": "List models"}},
             "/api/mcp/config": {"get": {"summary": "Get MCP config"}, "put": {"summary": "Update MCP config"}},
+            "/api/mcp/oauth/status": {"get": {"summary": "Get MCP OAuth readiness"}},
             "/api/memory": {"get": {"summary": "Get memory"}},
             "/api/skills": {"get": {"summary": "List skills"}},
+            "/api/skills/install": {"post": {"summary": "Install skill archive metadata"}},
             "/api/threads/{thread_id}": {"delete": {"summary": "Delete thread"}},
-            "/api/manage/admin/storage/switch": {"post": {"summary": "Switch storage backend"}}
+            "/api/manage/admin/storage/switch": {"post": {"summary": "Switch storage backend"}},
+            "/api/manage/admin/storage/status": {"get": {"summary": "Get runtime storage backend status"}}
         }
     }))
 }
@@ -297,9 +328,11 @@ struct StorageSwitch {
 
 #[derive(Debug, Serialize)]
 struct StorageSwitchResponse {
-    backend: String,
+    requested_backend: String,
+    active_backend: String,
     applied: bool,
     persisted: bool,
+    capabilities: serde_json::Value,
     reason: Option<String>,
 }
 
@@ -307,33 +340,126 @@ async fn storage_switch(
     State(st): State<AppState>,
     Json(body): Json<StorageSwitch>,
 ) -> impl IntoResponse {
-    let backend = StorageBackendKind::from_mode(&body.backend);
-    let (applied, reason) = match validate_storage_backend(backend) {
-        Ok(()) => (true, None),
-        Err(msg) => (false, Some(msg)),
-    };
+    metrics::counter!("open_harness_manage_storage_switch_total").increment(1);
+    let requested_backend = body.backend;
+    let backend = StorageBackendKind::from_mode(&requested_backend);
+    let (applied, active_backend, capabilities, reason) =
+        match switch_runtime_storage(&st, backend).await {
+            Ok(out) => out,
+            Err(msg) => {
+                metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
+                let rt = st.storage_runtime.read().await;
+                (false, rt.active_mode.clone(), rt.capabilities.clone(), Some(msg))
+            }
+        };
 
     let persisted =
-        if applied { persist_storage_mode_to_config(&body.backend).is_ok() } else { false };
+        if applied { persist_storage_mode_to_config(&active_backend).is_ok() } else { false };
 
     if applied {
         let mut s = st.store.write().await;
-        s.storage_mode = body.backend.clone();
+        s.storage_mode = active_backend.clone();
     }
     (
         StatusCode::OK,
-        Json(StorageSwitchResponse { backend: body.backend, applied, persisted, reason }),
+        Json(StorageSwitchResponse {
+            requested_backend,
+            active_backend,
+            applied,
+            persisted,
+            capabilities,
+            reason,
+        }),
     )
 }
 
-fn validate_storage_backend(backend: StorageBackendKind) -> Result<(), String> {
+async fn switch_runtime_storage(
+    st: &AppState,
+    backend: StorageBackendKind,
+) -> Result<(bool, String, serde_json::Value, Option<String>), String> {
     match backend {
-        StorageBackendKind::LocalFs => Ok(()),
-        StorageBackendKind::Sqlite => Ok(()),
-        StorageBackendKind::Postgres => Ok(()),
-        StorageBackendKind::Redis => Ok(()),
-        StorageBackendKind::S3 => Ok(()),
+        StorageBackendKind::LocalFs => {
+            let mut rt = st.storage_runtime.write().await;
+            rt.active_mode = "local_fs".to_string();
+            rt.manage_tasks = st.storage.clone();
+            rt.capabilities = storage_capabilities("local_fs");
+            rt.last_switch_ts = now_ts();
+            Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
+        }
+        StorageBackendKind::Postgres => {
+            let cfg = load_cached_or_default();
+            let postgres_url =
+                cfg.storage.postgres_url.or(cfg.manage.postgres_url).ok_or_else(|| {
+                    "postgres_url is missing in storage/manage config".to_string()
+                })?;
+            let pg = PostgresManageTaskStore::connect(&postgres_url)
+                .await
+                .map_err(|e| format!("postgres connect failed: {e}"))?;
+            let mut rt = st.storage_runtime.write().await;
+            rt.active_mode = "postgres".to_string();
+            rt.manage_tasks = Arc::new(pg);
+            rt.capabilities = storage_capabilities("postgres");
+            rt.last_switch_ts = now_ts();
+            Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
+        }
+        StorageBackendKind::Sqlite => {
+            Err("sqlite runtime switch rejected: manage task backend is not wired yet".to_string())
+        }
+        StorageBackendKind::Redis => {
+            Err("redis runtime switch rejected: manage task backend is not wired yet".to_string())
+        }
+        StorageBackendKind::S3 => {
+            Err("s3 runtime switch rejected: manage task backend is not wired yet".to_string())
+        }
     }
+}
+
+fn storage_capabilities(mode: &str) -> serde_json::Value {
+    match mode {
+        "postgres" => json!({
+            "manage_tasks": true,
+            "memory": false,
+            "skills": false,
+            "tool_records": false,
+            "subagent_tasks": false,
+            "sandbox_logs": false
+        }),
+        "local_fs" => json!({
+            "manage_tasks": true,
+            "memory": true,
+            "skills": true,
+            "tool_records": true,
+            "subagent_tasks": true,
+            "sandbox_logs": true
+        }),
+        _ => json!({
+            "manage_tasks": false,
+            "memory": false,
+            "skills": false,
+            "tool_records": false,
+            "subagent_tasks": false,
+            "sandbox_logs": false
+        }),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StorageStatusResponse {
+    active_backend: String,
+    capabilities: serde_json::Value,
+    last_switch_ts: i64,
+}
+
+async fn storage_status(State(st): State<AppState>) -> impl IntoResponse {
+    let rt = st.storage_runtime.read().await;
+    (
+        StatusCode::OK,
+        Json(StorageStatusResponse {
+            active_backend: rt.active_mode.clone(),
+            capabilities: rt.capabilities.clone(),
+            last_switch_ts: rt.last_switch_ts,
+        }),
+    )
 }
 
 fn config_path() -> PathBuf {
@@ -392,8 +518,20 @@ async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
                     supports_reasoning_effort: false,
                 })
                 .collect();
-            store.storage_mode = cfg.storage.mode;
-            (StatusCode::OK, Json(json!({"reloaded": true}))).into_response()
+            let storage_mode = cfg.storage.mode.clone();
+            store.storage_mode = storage_mode.clone();
+            drop(store);
+            let backend = StorageBackendKind::from_mode(&storage_mode);
+            let switch_result = switch_runtime_storage(&st, backend).await;
+            let runtime_switched = switch_result.is_ok();
+            if !runtime_switched {
+                metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
+            }
+            (
+                StatusCode::OK,
+                Json(json!({"reloaded": true, "runtime_storage_switched": runtime_switched})),
+            )
+                .into_response()
         }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -433,6 +571,22 @@ async fn put_mcp_config(
     s.mcp_servers = body.get("mcp_servers").cloned().unwrap_or_else(|| json!({}));
     let _ = persist_json(&st.local_fs_root.join("config").join("mcp_servers.json"), &s.mcp_servers);
     Json(json!({ "mcp_servers": s.mcp_servers }))
+}
+
+async fn get_mcp_oauth_status(State(st): State<AppState>) -> impl IntoResponse {
+    let s = st.store.read().await;
+    let servers = s.mcp_servers.as_object().cloned().unwrap_or_default();
+    let mut status = Vec::new();
+    for (name, cfg) in servers {
+        let mut full_cfg = cfg;
+        if full_cfg.get("name").is_none() {
+            full_cfg["name"] = json!(name.clone());
+        }
+        let parsed: Option<McpServerConfig> = serde_json::from_value(full_cfg).ok();
+        let oauth_enabled = parsed.as_ref().map(McpServerConfig::oauth_enabled).unwrap_or(false);
+        status.push(json!({"name": name, "oauth_enabled": oauth_enabled}));
+    }
+    Json(json!({ "servers": status }))
 }
 
 async fn get_memory(State(st): State<AppState>) -> impl IntoResponse {
@@ -494,6 +648,49 @@ async fn list_skills(State(st): State<AppState>) -> impl IntoResponse {
     let skills: Vec<serde_json::Value> =
         skills.into_iter().map(|s| json!({"name": s.name, "enabled": s.enabled})).collect();
     Json(json!({ "skills": skills }))
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallSkillRequest {
+    archive_name: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+async fn install_skill_archive(
+    State(st): State<AppState>,
+    Json(body): Json<InstallSkillRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = SkillsRuntime::validate_skill_archive(&body.archive_name) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": err}))).into_response();
+    }
+    let Some(skill_name) = body.archive_name.strip_suffix(".skill") else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid archive name"})))
+            .into_response();
+    };
+    let enabled = body.enabled.unwrap_or(true);
+    let marker = st.skills_install_dir.join(format!("{skill_name}.installed"));
+    if let Some(parent) = marker.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"create install dir failed"})),
+            )
+                .into_response();
+        }
+    }
+    if std::fs::write(&marker, body.archive_name.as_bytes()).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"persist install marker failed"})),
+        )
+            .into_response();
+    }
+    if st.storage.put_skill(&SkillRecord { name: skill_name.to_string(), enabled }).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"persist_skill_failed"})))
+            .into_response();
+    }
+    Json(json!({"installed": true, "skill": skill_name, "enabled": enabled})).into_response()
 }
 
 async fn get_skill(
@@ -786,5 +983,14 @@ mod tests {
         persist_storage_mode_to_config("sqlite").expect("persist");
         let after = std::fs::read_to_string(&config_path).expect("read");
         assert!(after.contains("mode: sqlite"));
+    }
+
+    #[test]
+    fn storage_capabilities_are_backend_aware() {
+        let local = storage_capabilities("local_fs");
+        assert_eq!(local.get("memory").and_then(|v| v.as_bool()), Some(true));
+        let pg = storage_capabilities("postgres");
+        assert_eq!(pg.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(pg.get("skills").and_then(|v| v.as_bool()), Some(false));
     }
 }

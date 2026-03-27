@@ -5,8 +5,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::middleware::{
-    ClarificationMiddleware, MemoryMiddleware, Middleware, MiddlewareContext,
-    SummarizationMiddleware, TodoMiddleware, ToolDetectMiddleware,
+    ClarificationMiddleware, GuardrailsMiddleware, LoopDetectionMiddleware, MemoryMiddleware,
+    Middleware, MiddlewareContext, SummarizationMiddleware, TodoMiddleware, ToolDetectMiddleware,
+    ToolErrorHandlingMiddleware,
 };
 use crate::subagent::{SubagentExecutor, SubagentRequest, SubagentResult};
 use crate::types::{RuntimeError, RuntimeEvent};
@@ -23,7 +24,10 @@ impl Default for RuntimeKernel {
                 Box::new(SummarizationMiddleware),
                 Box::new(MemoryMiddleware),
                 Box::new(ToolDetectMiddleware),
+                Box::new(LoopDetectionMiddleware),
                 Box::new(TodoMiddleware),
+                Box::new(ToolErrorHandlingMiddleware),
+                Box::new(GuardrailsMiddleware),
                 Box::new(ClarificationMiddleware),
             ],
             subagent_executor: SubagentExecutor::new(4, Duration::from_secs(30)),
@@ -46,6 +50,8 @@ impl RuntimeKernel {
             tool_calls: vec![],
             loop_detected: false,
             token_usage_estimate: 0,
+            warnings: vec![],
+            blocked_tools: vec![],
         };
         for middleware in &self.chain {
             middleware.before_turn(&mut ctx).await?;
@@ -69,7 +75,9 @@ impl RuntimeKernel {
                 "loop_detected": ctx.loop_detected,
                 "token_usage_estimate": ctx.token_usage_estimate,
                 "todos": ctx.todos,
-                "memory_facts": ctx.memory_facts
+                "memory_facts": ctx.memory_facts,
+                "warnings": ctx.warnings,
+                "blocked_tools": ctx.blocked_tools
             }),
         });
         out.push(RuntimeEvent::End { reason: "completed".to_string() });
@@ -92,7 +100,20 @@ mod tests {
             .await
             .expect("prepare");
         assert!(!ctx.memory_facts.is_empty());
+        assert!(ctx.blocked_tools.iter().any(|name| name == "web_search"));
         let events = kernel.render_events(&ctx);
         assert!(!events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn loop_detection_sets_warning() {
+        let kernel = RuntimeKernel::default();
+        let msg = serde_json::json!("repeat");
+        let ctx = kernel
+            .prepare_with_input(Configurable::default(), vec![msg.clone(), msg])
+            .await
+            .unwrap_or_else(|err| panic!("prepare_with_input failed: {err}"));
+        assert!(ctx.loop_detected);
+        assert!(!ctx.warnings.is_empty());
     }
 }
