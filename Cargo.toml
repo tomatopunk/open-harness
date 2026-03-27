@@ -13,6 +13,7 @@ members = [
     "crates/model-runtime",
     "crates/channel-runtime",
     "crates/channel-bootstrap",
+    "crates/app-auth",
     "crates/channel-dingtalk",
     "crates/channel-wecom",
     "crates/sandbox-runtime",

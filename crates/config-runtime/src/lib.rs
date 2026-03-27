@@ -6,7 +6,7 @@ use figment::{
 };
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf, sync::RwLock};
+use std::{fs, path::PathBuf, sync::RwLock, time::SystemTime};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -208,7 +208,14 @@ fn default_storage() -> StorageConfig {
     }
 }
 
-static SNAPSHOT: Lazy<RwLock<Option<AppConfig>>> = Lazy::new(|| RwLock::new(None));
+#[derive(Debug, Clone)]
+struct ConfigSnapshot {
+    config: AppConfig,
+    config_path: PathBuf,
+    modified_at: Option<SystemTime>,
+}
+
+static SNAPSHOT: Lazy<RwLock<Option<ConfigSnapshot>>> = Lazy::new(|| RwLock::new(None));
 
 fn app_config_path() -> PathBuf {
     if let Ok(path) = std::env::var("OPEN_HARNESS_CONFIG_PATH") {
@@ -297,6 +304,41 @@ pub fn load_or_default() -> AppConfig {
     load_from_env().unwrap_or_default()
 }
 
+fn read_modified_at(path: &PathBuf) -> Option<SystemTime> {
+    fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Load config with process-local cache and mtime-based reload.
+pub fn load_cached_or_default() -> AppConfig {
+    let cfg_path = app_config_path();
+    let modified_at = read_modified_at(&cfg_path);
+
+    if let Some(snapshot) = SNAPSHOT.read().ok().and_then(|g| g.clone()) {
+        if snapshot.config_path == cfg_path && snapshot.modified_at == modified_at {
+            return snapshot.config;
+        }
+    }
+
+    let loaded = load_or_default();
+    if let Ok(mut guard) = SNAPSHOT.write() {
+        *guard =
+            Some(ConfigSnapshot { config: loaded.clone(), config_path: cfg_path, modified_at });
+    }
+    loaded
+}
+
+/// Force reload from disk/env and refresh cache.
+pub fn reload_cached() -> Result<AppConfig, ConfigError> {
+    let cfg_path = app_config_path();
+    let loaded = load_from_env()?;
+    let modified_at = read_modified_at(&cfg_path);
+    if let Ok(mut guard) = SNAPSHOT.write() {
+        *guard =
+            Some(ConfigSnapshot { config: loaded.clone(), config_path: cfg_path, modified_at });
+    }
+    Ok(loaded)
+}
+
 pub fn resolve_env_var_ref(value: &str) -> String {
     if let Some(stripped) = value.strip_prefix('$') {
         return std::env::var(stripped).unwrap_or_default();
@@ -305,7 +347,8 @@ pub fn resolve_env_var_ref(value: &str) -> String {
 }
 
 pub fn set_test_config(c: AppConfig) {
-    *SNAPSHOT.write().unwrap() = Some(c);
+    *SNAPSHOT.write().expect("snapshot write") =
+        Some(ConfigSnapshot { config: c, config_path: app_config_path(), modified_at: None });
 }
 
 #[cfg(test)]

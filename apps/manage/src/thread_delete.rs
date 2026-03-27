@@ -1,6 +1,7 @@
 //! Thread delete: local `.deer-flow/threads/{id}` vs LangGraph remote — decoupled with compensation.
 
 use chrono::{DateTime, Utc};
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -60,27 +61,29 @@ impl ThreadDeleteEngine {
 
     /// Start or return existing delete operation for `thread_id` (idempotent).
     pub fn start_delete(self: &Arc<Self>, thread_id: Uuid) -> Uuid {
-        if let Some(existing) = self.idempotency.get(&thread_id) {
-            return *existing;
+        match self.idempotency.entry(thread_id) {
+            Entry::Occupied(existing) => *existing.get(),
+            Entry::Vacant(slot) => {
+                let op_id = Uuid::new_v4();
+                let now = Utc::now();
+                let op = ThreadDeleteOp {
+                    operation_id: op_id,
+                    thread_id,
+                    phase: DeletePhase::Requested,
+                    local_error: None,
+                    remote_error: None,
+                    created_at: now,
+                    updated_at: now,
+                };
+                self.ops.insert(op_id, op);
+                slot.insert(op_id);
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    this.run_delete(op_id, thread_id).await;
+                });
+                op_id
+            }
         }
-        let op_id = Uuid::new_v4();
-        let now = Utc::now();
-        let op = ThreadDeleteOp {
-            operation_id: op_id,
-            thread_id,
-            phase: DeletePhase::Requested,
-            local_error: None,
-            remote_error: None,
-            created_at: now,
-            updated_at: now,
-        };
-        self.ops.insert(op_id, op);
-        self.idempotency.insert(thread_id, op_id);
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            this.run_delete(op_id, thread_id).await;
-        });
-        op_id
     }
 
     async fn run_delete(&self, op_id: Uuid, thread_id: Uuid) {
@@ -151,6 +154,7 @@ impl ThreadDeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[tokio::test]
     async fn local_delete_idempotent_missing_dir() {
@@ -169,5 +173,29 @@ mod tests {
             "phase {:?}",
             o.phase
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_start_delete_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("threads");
+        let eng = ThreadDeleteEngine::new(root, "http://127.0.0.1:9".into());
+        let tid = Uuid::new_v4();
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let eng = Arc::clone(&eng);
+            handles.push(tokio::spawn(async move { eng.start_delete(tid) }));
+        }
+
+        let mut op_ids = HashSet::new();
+        for handle in handles {
+            let op_id = handle.await.expect("join");
+            op_ids.insert(op_id);
+        }
+
+        assert_eq!(op_ids.len(), 1, "same thread should share one operation");
+        assert_eq!(eng.idempotency.len(), 1);
+        assert_eq!(eng.ops.len(), 1);
     }
 }

@@ -27,6 +27,7 @@ dashmap = { workspace = true }
 chrono = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 protocol-compat = { path = "../../crates/protocol-compat" }
+app-auth = { path = "../../crates/app-auth" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 futures = { workspace = true }
