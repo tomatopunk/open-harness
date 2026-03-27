@@ -3346,6 +3346,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "serde_json",
  "sqlx",
  "state-abstraction",
  "thiserror 1.0.69",
