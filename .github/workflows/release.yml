@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --bins
+
+      - name: Discover built-in IM channels
+        run: |
+          mkdir -p dist
+          for manifest in crates/channel-*/Cargo.toml; do
+            crate_dir="$(basename "$(dirname "$manifest")")"
+            case "$crate_dir" in
+              channel-runtime|channel-bootstrap)
+                ;;
+              channel-*)
+                echo "${crate_dir#channel-}" >> dist/im-channels.txt
+                ;;
+            esac
+          done
+          sort -u dist/im-channels.txt -o dist/im-channels.txt
+          echo "Built-in IM channels:"
+          cat dist/im-channels.txt
+
+      - name: Print built executables
+        run: |
+          echo "Built executables in target/release:"
+          ls -lh target/release/open-harness-* || true
+          echo "IM channel service binary:"
+          ls -lh target/release/open-harness-channel || true
+
+      - name: Prepare release bundle
+        run: |
+          mkdir -p dist
+          cp target/release/open-harness-* dist/
+          tar -czf open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz -C dist .
+          shasum -a 256 open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz > open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-harness-${{ github.ref_name }}-linux-x86_64
+          path: |
+            open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz
+            open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz
+            open-harness-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256

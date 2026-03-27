@@ -12,6 +12,7 @@ members = [
     "crates/tool-runtime",
     "crates/model-runtime",
     "crates/channel-runtime",
+    "crates/channel-bootstrap",
     "crates/channel-dingtalk",
     "crates/channel-wecom",
     "crates/sandbox-runtime",
