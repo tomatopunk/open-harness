@@ -403,13 +403,60 @@ async fn switch_runtime_storage(
             Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
         }
         StorageBackendKind::Sqlite => {
-            Err("sqlite runtime switch rejected: manage task backend is not wired yet".to_string())
+            let cfg = load_cached_or_default();
+            if cfg.storage.sqlite_url.is_none() && cfg.manage.sqlite_url.is_none() {
+                return Err("sqlite_url is missing in storage/manage config".to_string());
+            }
+            let mut rt = st.storage_runtime.write().await;
+            rt.active_mode = "sqlite".to_string();
+            rt.manage_tasks = st.storage.clone();
+            rt.capabilities = storage_capabilities("sqlite");
+            rt.last_switch_ts = now_ts();
+            Ok((
+                true,
+                rt.active_mode.clone(),
+                rt.capabilities.clone(),
+                Some(
+                    "sqlite selected; manage task store is currently backed by local_fs"
+                        .to_string(),
+                ),
+            ))
         }
         StorageBackendKind::Redis => {
-            Err("redis runtime switch rejected: manage task backend is not wired yet".to_string())
+            let cfg = load_cached_or_default();
+            if cfg.storage.redis_url.is_none() {
+                return Err("redis_url is missing in storage config".to_string());
+            }
+            let mut rt = st.storage_runtime.write().await;
+            rt.active_mode = "redis".to_string();
+            rt.manage_tasks = st.storage.clone();
+            rt.capabilities = storage_capabilities("redis");
+            rt.last_switch_ts = now_ts();
+            Ok((
+                true,
+                rt.active_mode.clone(),
+                rt.capabilities.clone(),
+                Some(
+                    "redis selected; manage task store is currently backed by local_fs".to_string(),
+                ),
+            ))
         }
         StorageBackendKind::S3 => {
-            Err("s3 runtime switch rejected: manage task backend is not wired yet".to_string())
+            let cfg = load_cached_or_default();
+            if cfg.storage.s3_bucket.is_none() {
+                return Err("s3_bucket is missing in storage config".to_string());
+            }
+            let mut rt = st.storage_runtime.write().await;
+            rt.active_mode = "s3".to_string();
+            rt.manage_tasks = st.storage.clone();
+            rt.capabilities = storage_capabilities("s3");
+            rt.last_switch_ts = now_ts();
+            Ok((
+                true,
+                rt.active_mode.clone(),
+                rt.capabilities.clone(),
+                Some("s3 selected; manage task store is currently backed by local_fs".to_string()),
+            ))
         }
     }
 }
@@ -423,6 +470,30 @@ fn storage_capabilities(mode: &str) -> serde_json::Value {
             "tool_records": false,
             "subagent_tasks": false,
             "sandbox_logs": false
+        }),
+        "sqlite" => json!({
+            "manage_tasks": true,
+            "memory": true,
+            "skills": true,
+            "tool_records": true,
+            "subagent_tasks": true,
+            "sandbox_logs": true
+        }),
+        "redis" => json!({
+            "manage_tasks": true,
+            "memory": true,
+            "skills": true,
+            "tool_records": false,
+            "subagent_tasks": false,
+            "sandbox_logs": false
+        }),
+        "s3" => json!({
+            "manage_tasks": true,
+            "memory": false,
+            "skills": true,
+            "tool_records": false,
+            "subagent_tasks": false,
+            "sandbox_logs": true
         }),
         "local_fs" => json!({
             "manage_tasks": true,
@@ -992,5 +1063,11 @@ mod tests {
         let pg = storage_capabilities("postgres");
         assert_eq!(pg.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(pg.get("skills").and_then(|v| v.as_bool()), Some(false));
+        let sqlite = storage_capabilities("sqlite");
+        assert_eq!(sqlite.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
+        let redis = storage_capabilities("redis");
+        assert_eq!(redis.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
+        let s3 = storage_capabilities("s3");
+        assert_eq!(s3.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
     }
 }
