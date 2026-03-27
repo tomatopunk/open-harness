@@ -18,6 +18,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use protocol_compat::{OpenAiChatCompletionsRequest, OpenAiModelItem, OpenAiModelsResponse};
 use serde_json::json;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -33,10 +34,19 @@ use chat_support::{
 struct AppState {
     langgraph_upstream: Arc<RwLock<String>>,
     client: reqwest::Client,
-    conversation_map: Arc<DashMap<String, String>>,
+    conversation_map: Arc<DashMap<String, ConversationEntry>>,
     models: Arc<RwLock<Vec<ModelConfig>>>,
     auth_state: SharedAuthState,
 }
+
+#[derive(Clone)]
+struct ConversationEntry {
+    thread_id: String,
+    updated_at: Instant,
+}
+
+const MAX_CONVERSATIONS: usize = 10_000;
+const CONVERSATION_TTL: Duration = Duration::from_secs(60 * 60 * 24);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -50,6 +60,14 @@ async fn main() -> anyhow::Result<()> {
     let cfg = load_cached_or_default();
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_gateway_requests_total", "Total proxied requests");
+    metrics::describe_counter!(
+        "open_harness_gateway_conversation_evicted_total",
+        "Conversation cache entries evicted"
+    );
+    metrics::describe_counter!(
+        "open_harness_gateway_stream_error_total",
+        "Streaming upstream errors observed"
+    );
     let auth_settings = auth_settings_from_config(&cfg.gateway.auth);
     let auth_state =
         shared_state(auth_settings, vec!["/healthz".to_string(), "/metrics".to_string()]);
@@ -129,15 +147,23 @@ async fn openai_chat_completions(
             .into_response();
     }
 
+    prune_conversation_map(&st.conversation_map);
     let mut configurable = body.configurable.clone().unwrap_or_default();
     let thread_key = conversation_cache_key(&auth_ctx, body.user.as_deref());
     let thread_id = configurable.thread_id.clone().unwrap_or_else(|| {
         st.conversation_map
             .entry(thread_key.clone())
-            .or_insert_with(|| Uuid::new_v4().to_string())
+            .or_insert_with(|| ConversationEntry {
+                thread_id: Uuid::new_v4().to_string(),
+                updated_at: Instant::now(),
+            })
+            .thread_id
             .clone()
     });
-    st.conversation_map.insert(thread_key, thread_id.clone());
+    st.conversation_map.insert(
+        thread_key,
+        ConversationEntry { thread_id: thread_id.clone(), updated_at: Instant::now() },
+    );
 
     if let Err(e) = ensure_thread(&st, &thread_id).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response();
@@ -250,14 +276,22 @@ async fn openai_chat_completions(
                         let next = out.pop().expect("non-empty");
                         Some((next, (s, req_id, done_sent, out)))
                     }
-                    Some(Err(_)) => {
+                    Some(Err(err)) => {
                         if done_sent {
                             None
                         } else {
+                            metrics::counter!("open_harness_gateway_stream_error_total")
+                                .increment(1);
+                            let error_chunk = format!(
+                                "data: {}\n\n",
+                                json!({
+                                    "id": req_id,
+                                    "object":"chat.completion.chunk",
+                                    "choices":[{"index":0,"delta":{"content": format!("upstream_stream_error: {err}")},"finish_reason":"error"}]
+                                })
+                            );
                             Some((
-                                Ok(bytes::Bytes::from(
-                                    "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-                                )),
+                                Ok(bytes::Bytes::from(format!("{error_chunk}data: [DONE]\n\n"))),
                                 (s, req_id, true, vec![]),
                             ))
                         }
@@ -298,6 +332,31 @@ async fn openai_chat_completions(
         }]
     }))
     .into_response()
+}
+
+fn prune_conversation_map(conversation_map: &DashMap<String, ConversationEntry>) {
+    let now = Instant::now();
+    let before_ttl = conversation_map.len();
+    conversation_map.retain(|_, entry| now.duration_since(entry.updated_at) <= CONVERSATION_TTL);
+    let ttl_evicted = before_ttl.saturating_sub(conversation_map.len());
+    if ttl_evicted > 0 {
+        metrics::counter!("open_harness_gateway_conversation_evicted_total")
+            .increment(ttl_evicted as u64);
+    }
+    if conversation_map.len() <= MAX_CONVERSATIONS {
+        return;
+    }
+    let mut candidates: Vec<(String, Instant)> =
+        conversation_map.iter().map(|entry| (entry.key().clone(), entry.updated_at)).collect();
+    candidates.sort_by_key(|(_, updated_at)| *updated_at);
+    let remove_n = candidates.len().saturating_sub(MAX_CONVERSATIONS);
+    for (key, _) in candidates.into_iter().take(remove_n) {
+        conversation_map.remove(&key);
+    }
+    if remove_n > 0 {
+        metrics::counter!("open_harness_gateway_conversation_evicted_total")
+            .increment(remove_n as u64);
+    }
 }
 
 fn auth_settings_from_config(cfg: &AuthConfig) -> AuthSettings {

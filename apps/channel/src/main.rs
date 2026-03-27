@@ -1,5 +1,6 @@
 use axum::{
     extract::{Path, State},
+    http::HeaderMap,
     routing::get,
     routing::post,
     Json, Router,
@@ -69,12 +70,18 @@ struct HookResponse {
 async fn channel_hook(
     State(st): State<AppState>,
     Path(platform): Path<String>,
+    headers: HeaderMap,
     body: String,
 ) -> Json<serde_json::Value> {
     let Some(driver) = st.registry.get(&platform) else {
         return Json(json!({"error": "platform_not_supported"}));
     };
-    let headers = HashMap::new();
+    let headers: HashMap<String, String> = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str().ok().map(|value| (k.as_str().to_string(), value.to_string()))
+        })
+        .collect();
     if driver.verify_signature(&headers, body.as_bytes()).await.is_err() {
         return Json(json!({"error": "invalid_signature"}));
     }

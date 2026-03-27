@@ -301,7 +301,17 @@ pub fn load_from_env() -> Result<AppConfig, ConfigError> {
 
 /// Merge env over defaults (never fails).
 pub fn load_or_default() -> AppConfig {
-    load_from_env().unwrap_or_default()
+    match load_from_env() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::error!(
+                config_path = %app_config_path().display(),
+                error = %err,
+                "failed to load config, falling back to defaults"
+            );
+            AppConfig::default()
+        }
+    }
 }
 
 fn read_modified_at(path: &PathBuf) -> Option<SystemTime> {

@@ -401,6 +401,7 @@ dependencies = [
  "channel-runtime",
  "channel-wecom",
  "config-runtime",
+ "tracing",
 ]
 
 [[package]]
@@ -489,6 +490,7 @@ dependencies = [
  "once_cell",
  "serde",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

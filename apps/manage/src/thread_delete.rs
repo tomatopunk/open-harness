@@ -6,7 +6,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::time::Duration;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,21 +37,25 @@ pub struct ThreadDeleteOp {
 
 pub struct ThreadDeleteEngine {
     pub threads_root: PathBuf,
-    pub langgraph_url: String,
+    pub langgraph_url: Arc<RwLock<String>>,
     pub http: reqwest::Client,
     pub ops: DashMap<Uuid, ThreadDeleteOp>,
-    pub idempotency: DashMap<Uuid, Uuid>, // thread_id -> operation_id
+    pub idempotency: DashMap<Uuid, (Uuid, DateTime<Utc>)>, // thread_id -> (operation_id, touched_at)
+    op_retention: Duration,
+    idempotency_retention: Duration,
     queue: Mutex<()>,
 }
 
 impl ThreadDeleteEngine {
-    pub fn new(threads_root: PathBuf, langgraph_url: String) -> Arc<Self> {
+    pub fn new(threads_root: PathBuf, langgraph_url: Arc<RwLock<String>>) -> Arc<Self> {
         Arc::new(Self {
             threads_root,
             langgraph_url,
             http: reqwest::Client::new(),
             ops: DashMap::new(),
             idempotency: DashMap::new(),
+            op_retention: Duration::from_secs(30 * 60),
+            idempotency_retention: Duration::from_secs(5 * 60),
             queue: Mutex::new(()),
         })
     }
@@ -61,8 +66,13 @@ impl ThreadDeleteEngine {
 
     /// Start or return existing delete operation for `thread_id` (idempotent).
     pub fn start_delete(self: &Arc<Self>, thread_id: Uuid) -> Uuid {
+        self.compact_state();
         match self.idempotency.entry(thread_id) {
-            Entry::Occupied(existing) => *existing.get(),
+            Entry::Occupied(mut existing) => {
+                let operation_id = existing.get().0;
+                existing.insert((operation_id, Utc::now()));
+                operation_id
+            }
             Entry::Vacant(slot) => {
                 let op_id = Uuid::new_v4();
                 let now = Utc::now();
@@ -76,7 +86,7 @@ impl ThreadDeleteEngine {
                     updated_at: now,
                 };
                 self.ops.insert(op_id, op);
-                slot.insert(op_id);
+                slot.insert((op_id, now));
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
                     this.run_delete(op_id, thread_id).await;
@@ -110,7 +120,8 @@ impl ThreadDeleteEngine {
         }
 
         self.update_phase(op_id, DeletePhase::DeletingRemote);
-        let url = format!("{}/threads/{}", self.langgraph_url.trim_end_matches('/'), thread_id);
+        let langgraph_url = self.langgraph_url.read().await.clone();
+        let url = format!("{}/threads/{}", langgraph_url.trim_end_matches('/'), thread_id);
         match self.http.delete(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
@@ -135,6 +146,8 @@ impl ThreadDeleteEngine {
                 self.update_phase(op_id, DeletePhase::CompletedWithWarning);
             }
         }
+
+        self.compact_state();
     }
 
     fn update_phase(&self, op_id: Uuid, phase: DeletePhase) {
@@ -149,6 +162,19 @@ impl ThreadDeleteEngine {
             f(&mut e);
         }
     }
+
+    fn compact_state(&self) {
+        let now = Utc::now();
+        let op_retention = chrono::Duration::from_std(self.op_retention)
+            .unwrap_or_else(|_| chrono::Duration::minutes(30));
+        let idempotency_retention = chrono::Duration::from_std(self.idempotency_retention)
+            .unwrap_or_else(|_| chrono::Duration::minutes(5));
+
+        self.ops.retain(|_, op| now.signed_duration_since(op.updated_at) <= op_retention);
+        self.idempotency.retain(|_, (_, touched_at)| {
+            now.signed_duration_since(*touched_at) <= idempotency_retention
+        });
+    }
 }
 
 #[cfg(test)]
@@ -160,7 +186,10 @@ mod tests {
     async fn local_delete_idempotent_missing_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("threads");
-        let eng = ThreadDeleteEngine::new(root.clone(), "http://127.0.0.1:9".into());
+        let eng = ThreadDeleteEngine::new(
+            root.clone(),
+            Arc::new(RwLock::new("http://127.0.0.1:9".into())),
+        );
         let tid = Uuid::new_v4();
         let op = eng.start_delete(tid);
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -179,7 +208,7 @@ mod tests {
     async fn concurrent_start_delete_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().join("threads");
-        let eng = ThreadDeleteEngine::new(root, "http://127.0.0.1:9".into());
+        let eng = ThreadDeleteEngine::new(root, Arc::new(RwLock::new("http://127.0.0.1:9".into())));
         let tid = Uuid::new_v4();
 
         let mut handles = Vec::new();

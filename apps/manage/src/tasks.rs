@@ -19,7 +19,7 @@ pub fn prune_tasks(tasks: &dashmap::DashMap<String, TaskRecord>, capacity: usize
         return;
     }
     entries.sort_by_key(|(_, ts)| *ts);
-    let remove_n = entries.len().saturating_sub(capacity);
+    let remove_n = tasks.len().saturating_sub(capacity).min(entries.len());
     for (task_id, _) in entries.into_iter().take(remove_n) {
         tasks.remove(&task_id);
     }
@@ -84,6 +84,23 @@ mod tests {
         assert!(tasks.contains_key("running"));
         assert!(tasks.contains_key("queued"));
         assert!(!tasks.contains_key("done_old"));
-        assert!(tasks.contains_key("failed_new"));
+        assert!(!tasks.contains_key("failed_new"));
+    }
+
+    #[test]
+    fn prune_tasks_respects_total_capacity() {
+        let tasks = dashmap::DashMap::new();
+        tasks.insert("running1".to_string(), make_task("running1", TaskStatus::Running, 1));
+        tasks.insert("running2".to_string(), make_task("running2", TaskStatus::Running, 2));
+        tasks.insert("done1".to_string(), make_task("done1", TaskStatus::Completed, 3));
+        tasks.insert("done2".to_string(), make_task("done2", TaskStatus::Failed, 4));
+        tasks.insert("done3".to_string(), make_task("done3", TaskStatus::Completed, 5));
+
+        prune_tasks(&tasks, 3);
+
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.contains_key("running1"));
+        assert!(tasks.contains_key("running2"));
+        assert!(tasks.contains_key("done3"));
     }
 }

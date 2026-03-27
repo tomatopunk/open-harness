@@ -14,15 +14,17 @@ pub fn register_builtin_channels(
     for platform in &enabled {
         match platform.as_str() {
             DINGTALK => {
-                let driver = DingTalkDriver {
-                    secret: std::env::var("DINGTALK_SECRET").unwrap_or_else(|_| "dev".to_string()),
-                };
-                registry.register(Box::new(driver));
+                if let Some(secret) = resolve_dingtalk_secret() {
+                    let driver = DingTalkDriver { secret };
+                    registry.register(Box::new(driver));
+                }
             }
             WECOM => {
                 registry.register(Box::new(WeComDriver));
             }
-            _ => {}
+            _ => {
+                tracing::warn!(platform = %platform, "unsupported channel platform configured");
+            }
         }
     }
     registry.list_platforms()
@@ -32,17 +34,37 @@ pub fn configured_channels(config: &AppConfig) -> Vec<String> {
     if config.channels.enabled.is_empty() {
         return builtin_channels();
     }
-    config
-        .channels
-        .enabled
-        .iter()
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| matches!(name.as_str(), DINGTALK | WECOM))
-        .collect()
+    let mut result = Vec::new();
+    for name in &config.channels.enabled {
+        let normalized = name.trim().to_ascii_lowercase();
+        if matches!(normalized.as_str(), DINGTALK | WECOM) {
+            result.push(normalized);
+        } else {
+            tracing::warn!(platform = %normalized, "unknown channel ignored");
+        }
+    }
+    result
 }
 
 pub fn builtin_channels() -> Vec<String> {
     vec![DINGTALK.to_string(), WECOM.to_string()]
+}
+
+fn resolve_dingtalk_secret() -> Option<String> {
+    if let Ok(secret) = std::env::var("DINGTALK_SECRET") {
+        return Some(secret);
+    }
+    if is_production() {
+        tracing::error!("DINGTALK_SECRET is required in production; dingtalk disabled");
+        return None;
+    }
+    tracing::warn!("DINGTALK_SECRET missing; using development fallback secret");
+    Some("dev".to_string())
+}
+
+fn is_production() -> bool {
+    let env = std::env::var("OPEN_HARNESS_ENV").unwrap_or_default().to_ascii_lowercase();
+    matches!(env.as_str(), "prod" | "production")
 }
 
 #[cfg(test)]
