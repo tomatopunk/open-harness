@@ -53,3 +53,6 @@ channels:
   enabled:
     - dingtalk
     - wecom
+
+runtime:
+  engine: langgraph-compatible

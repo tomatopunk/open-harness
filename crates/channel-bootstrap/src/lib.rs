@@ -20,7 +20,8 @@ pub fn register_builtin_channels(
                 }
             }
             WECOM => {
-                registry.register(Box::new(WeComDriver));
+                let secret = std::env::var("WECOM_SECRET").ok();
+                registry.register(Box::new(WeComDriver { secret }));
             }
             _ => {
                 tracing::warn!(platform = %platform, "unsupported channel platform configured");

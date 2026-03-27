@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(health))
+        .route("/openapi.json", get(openapi_spec))
         .route("/v1/models", get(openai_models))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/api/admin/config/reload", post(reload_config))
@@ -110,6 +111,20 @@ async fn shutdown_signal() {
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+async fn openapi_spec() -> impl IntoResponse {
+    Json(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "open-harness-gateway", "version": "0.1.0"},
+        "paths": {
+            "/healthz": {"get": {"summary": "Health check"}},
+            "/v1/models": {"get": {"summary": "List models"}},
+            "/v1/chat/completions": {"post": {"summary": "OpenAI compatible chat completions"}},
+            "/api/admin/config/reload": {"post": {"summary": "Reload config"}},
+            "/metrics": {"get": {"summary": "Prometheus metrics"}}
+        }
+    }))
 }
 
 /// Minimal SSE demo (LangGraph-style `data: {json}\n\n`).

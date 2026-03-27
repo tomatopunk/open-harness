@@ -2,6 +2,9 @@ use axum::{routing::get, routing::post, Json, Router};
 use config_runtime::load_or_default;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
+use runtime_kernel::RuntimeEvent;
+use runtime_langgraph_adapter::LanggraphAdapter;
+use runtime_llm_chain_adapter::LlmChainAdapter;
 use serde::Deserialize;
 use serde_json::json;
 use state_abstraction::{
@@ -16,15 +19,62 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     store: Arc<LocalFsStateStore>,
+    runtime_engine: RuntimeEngine,
 }
 
-async fn pipeline_check() -> Json<serde_json::Value> {
+#[derive(Clone, Copy)]
+enum RuntimeEngine {
+    LanggraphCompatible,
+    LlmChain,
+}
+
+impl RuntimeEngine {
+    fn from_str(value: &str) -> Self {
+        match value {
+            "llm-chain" => Self::LlmChain,
+            _ => Self::LanggraphCompatible,
+        }
+    }
+}
+
+async fn run_runtime(
+    engine: RuntimeEngine,
+    configurable: Configurable,
+    messages: Vec<serde_json::Value>,
+) -> Vec<RuntimeEvent> {
+    match engine {
+        RuntimeEngine::LanggraphCompatible => {
+            let adapter = LanggraphAdapter::default();
+            adapter
+                .run(configurable, messages)
+                .await
+                .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
+        }
+        RuntimeEngine::LlmChain => {
+            let adapter = LlmChainAdapter::default();
+            adapter
+                .run(configurable, messages)
+                .await
+                .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
+        }
+    }
+}
+
+async fn pipeline_check(
+    axum::extract::State(st): axum::extract::State<AppState>,
+) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
-    let ctx = pipeline.prepare(Configurable::default()).expect("pipeline");
+    let ctx = pipeline.prepare(Configurable::default()).await.expect("pipeline");
+    let events = run_runtime(st.runtime_engine, Configurable::default(), vec![]).await;
     Json(json!({
         "middleware": "ok",
         "configurable": ctx.configurable,
-        "token_usage_estimate": ctx.token_usage_estimate
+        "token_usage_estimate": ctx.token_usage_estimate,
+        "runtime_engine": match st.runtime_engine {
+            RuntimeEngine::LanggraphCompatible => "langgraph-compatible",
+            RuntimeEngine::LlmChain => "llm-chain"
+        },
+        "events_count": events.len()
     }))
 }
 
@@ -41,9 +91,11 @@ async fn run_orchestrate_with_state(
     Json(body): Json<OrchestrateRequest>,
 ) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
-    let ctx = pipeline
-        .prepare_with_input(body.configurable.clone(), body.messages.clone())
-        .unwrap_or_else(|_| pipeline.prepare(body.configurable.clone()).expect("pipeline"));
+    let ctx =
+        match pipeline.prepare_with_input(body.configurable.clone(), body.messages.clone()).await {
+            Ok(ctx) => ctx,
+            Err(_) => pipeline.prepare(body.configurable.clone()).await.expect("pipeline"),
+        };
 
     let thread_id = body
         .configurable
@@ -110,6 +162,8 @@ async fn run_orchestrate_with_state(
     let subagent_records = st.store.list_tasks_by_thread(thread_id).await.unwrap_or_default();
     let sandbox_records = st.store.list_executions(thread_id).await.unwrap_or_default();
     let skills = st.store.list_skills().await.unwrap_or_default();
+    let events =
+        run_runtime(st.runtime_engine, body.configurable.clone(), body.messages.clone()).await;
 
     Json(json!({
         "ok": true,
@@ -121,7 +175,8 @@ async fn run_orchestrate_with_state(
         "skills": skills,
         "tool_records_count": tool_records.len(),
         "subagent_tasks_count": subagent_records.len(),
-        "sandbox_executions_count": sandbox_records.len()
+        "sandbox_executions_count": sandbox_records.len(),
+        "events": events
     }))
 }
 
@@ -139,10 +194,22 @@ async fn main() -> anyhow::Result<()> {
         let _ = layout.ensure_base_dirs();
     }
     let store = Arc::new(LocalFsStateStore::new(&cfg.storage.local_fs_root));
-    let app_state = AppState { store };
+    let app_state =
+        AppState { store, runtime_engine: RuntimeEngine::from_str(&cfg.runtime.engine) };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/openapi.json", get(|| async {
+            Json(json!({
+                "openapi": "3.1.0",
+                "info": {"title": "open-harness-orchestrator", "version": "0.1.0"},
+                "paths": {
+                    "/healthz": {"get": {"summary": "Health check"}},
+                    "/internal/pipeline-check": {"post": {"summary": "Check runtime pipeline"}},
+                    "/internal/orchestrate": {"post": {"summary": "Run orchestration and persist state"}}
+                }
+            }))
+        }))
         .route("/internal/pipeline-check", post(pipeline_check))
         .route("/internal/orchestrate", post(run_orchestrate_with_state))
         .layer(TraceLayer::new_for_http());

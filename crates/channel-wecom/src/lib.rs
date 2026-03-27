@@ -1,11 +1,16 @@
 //! WeCom (Enterprise WeChat) driver stub.
 
 use async_trait::async_trait;
+use base64::Engine;
 use channel_runtime::{ChannelDriver, ChannelEnvelope, ChannelError, NormalizedCommand};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::collections::HashMap;
 
-#[derive(Clone, Copy)]
-pub struct WeComDriver;
+#[derive(Clone)]
+pub struct WeComDriver {
+    pub secret: Option<String>,
+}
 
 #[async_trait]
 impl ChannelDriver for WeComDriver {
@@ -15,9 +20,22 @@ impl ChannelDriver for WeComDriver {
 
     async fn verify_signature(
         &self,
-        _headers: &HashMap<String, String>,
-        _raw_body: &[u8],
+        headers: &HashMap<String, String>,
+        raw_body: &[u8],
     ) -> Result<(), ChannelError> {
+        let Some(secret) = &self.secret else {
+            return Ok(());
+        };
+        let signature =
+            header_value(headers, "x-wecom-signature").ok_or(ChannelError::Unauthorized)?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+            .map_err(|e| ChannelError::InvalidPayload(e.to_string()))?;
+        mac.update(raw_body);
+        let expected =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        if expected != signature {
+            return Err(ChannelError::Unauthorized);
+        }
         Ok(())
     }
 
@@ -26,7 +44,12 @@ impl ChannelDriver for WeComDriver {
             .map_err(|e| ChannelError::InvalidPayload(e.to_string()))?;
         Ok(ChannelEnvelope {
             platform: "wecom".into(),
-            event_id: "evt".into(),
+            event_id: v
+                .get("MsgId")
+                .or_else(|| v.get("EventKey"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("evt")
+                .to_string(),
             user_id: v
                 .get("FromUserName")
                 .and_then(|x| x.as_str())
@@ -53,5 +76,21 @@ impl ChannelDriver for WeComDriver {
 
     async fn send_message(&self, _chat_id: &str, _text: &str) -> Result<(), ChannelError> {
         Ok(())
+    }
+}
+
+fn header_value<'a>(headers: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    headers.get(key).or_else(|| headers.get(&key.to_ascii_lowercase())).map(String::as_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepts_when_secret_disabled() {
+        let driver = WeComDriver { secret: None };
+        let headers = HashMap::new();
+        assert!(driver.verify_signature(&headers, b"{}").await.is_ok());
     }
 }

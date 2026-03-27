@@ -17,9 +17,16 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 state-abstraction = { path = "../../crates/state-abstraction" }
 orchestrator-core = { path = "../../crates/orchestrator-core" }
 protocol-compat = { path = "../../crates/protocol-compat" }
+runtime-kernel = { path = "../../crates/runtime-kernel" }
+runtime-langgraph-adapter = { path = "../../crates/runtime-langgraph-adapter" }
+runtime-llm-chain-adapter = { path = "../../crates/runtime-llm-chain-adapter" }

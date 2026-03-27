@@ -1,74 +1,26 @@
-use crate::middleware::{
-    MemoryMiddleware, Middleware, MiddlewareContext, SandboxMiddleware, SkillMiddleware,
-    SubagentMiddleware, SummarizationMiddleware, TodoMiddleware, ToolMiddleware,
-};
+use crate::middleware::MiddlewareContext;
 use protocol_compat::Configurable;
+use runtime_kernel::{RuntimeError, RuntimeKernel};
 
-/// Single-step pipeline applying middleware order close to deer-flow runtime.
+#[derive(Default)]
 pub struct LeadPipeline {
-    chain: Vec<Box<dyn Middleware>>,
-}
-
-impl Default for LeadPipeline {
-    fn default() -> Self {
-        Self {
-            chain: vec![
-                Box::new(SummarizationMiddleware),
-                Box::new(MemoryMiddleware),
-                Box::new(SkillMiddleware),
-                Box::new(ToolMiddleware),
-                Box::new(SandboxMiddleware),
-                Box::new(SubagentMiddleware),
-                Box::new(TodoMiddleware),
-            ],
-        }
-    }
+    kernel: RuntimeKernel,
 }
 
 impl LeadPipeline {
-    pub fn prepare(&self, configurable: Configurable) -> Result<MiddlewareContext, String> {
-        let mut ctx = MiddlewareContext {
-            configurable,
-            messages: vec![],
-            memory_facts: vec![],
-            todos: vec![],
-            tool_calls: vec![],
-            skill_hints: vec![],
-            sandbox_commands: vec![],
-            subagent_requests: vec![],
-            token_usage_estimate: 0,
-            loop_detected: false,
-        };
-        self.prepare_with_messages(&mut ctx)?;
-        Ok(ctx)
+    pub async fn prepare(
+        &self,
+        configurable: Configurable,
+    ) -> Result<MiddlewareContext, RuntimeError> {
+        self.kernel.prepare_with_input(configurable, vec![]).await
     }
 
-    pub fn prepare_with_input(
+    pub async fn prepare_with_input(
         &self,
         configurable: Configurable,
         messages: Vec<serde_json::Value>,
-    ) -> Result<MiddlewareContext, String> {
-        let mut ctx = MiddlewareContext {
-            configurable,
-            messages,
-            memory_facts: vec![],
-            todos: vec![],
-            tool_calls: vec![],
-            skill_hints: vec![],
-            sandbox_commands: vec![],
-            subagent_requests: vec![],
-            token_usage_estimate: 0,
-            loop_detected: false,
-        };
-        self.prepare_with_messages(&mut ctx)?;
-        Ok(ctx)
-    }
-
-    fn prepare_with_messages(&self, ctx: &mut MiddlewareContext) -> Result<(), String> {
-        for m in &self.chain {
-            m.before_turn(ctx)?;
-        }
-        Ok(())
+    ) -> Result<MiddlewareContext, RuntimeError> {
+        self.kernel.prepare_with_input(configurable, messages).await
     }
 }
 
@@ -76,10 +28,10 @@ impl LeadPipeline {
 mod tests {
     use super::*;
 
-    #[test]
-    fn pipeline_runs() {
+    #[tokio::test]
+    async fn pipeline_runs() {
         let p = LeadPipeline::default();
         let c = Configurable::default();
-        assert!(p.prepare(c).is_ok());
+        assert!(p.prepare_with_input(c, vec![serde_json::json!("hello")]).await.is_ok());
     }
 }

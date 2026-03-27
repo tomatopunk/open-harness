@@ -14,6 +14,7 @@ use config_runtime::{load_cached_or_default, reload_cached};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_yaml::Value as YamlValue;
 use state_abstraction::{
     LocalFsStateStore, ManageTaskStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
 };
@@ -167,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
     let task_workers = state.task_workers.clone();
     let app = Router::new()
         .route("/healthz", get(health))
+        .route("/openapi.json", get(openapi_spec))
         .route(
             "/metrics",
             get(move || {
@@ -227,6 +229,22 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
+async fn openapi_spec() -> impl IntoResponse {
+    Json(json!({
+        "openapi": "3.1.0",
+        "info": {"title": "open-harness-manage", "version": "0.1.0"},
+        "paths": {
+            "/healthz": {"get": {"summary": "Health check"}},
+            "/api/models": {"get": {"summary": "List models"}},
+            "/api/mcp/config": {"get": {"summary": "Get MCP config"}, "put": {"summary": "Update MCP config"}},
+            "/api/memory": {"get": {"summary": "Get memory"}},
+            "/api/skills": {"get": {"summary": "List skills"}},
+            "/api/threads/{thread_id}": {"delete": {"summary": "Delete thread"}},
+            "/api/manage/admin/storage/switch": {"post": {"summary": "Switch storage backend"}}
+        }
+    }))
+}
+
 async fn delete_thread(
     State(st): State<AppState>,
     Path(thread_id): Path<Uuid>,
@@ -281,22 +299,71 @@ struct StorageSwitch {
 struct StorageSwitchResponse {
     backend: String,
     applied: bool,
+    persisted: bool,
+    reason: Option<String>,
 }
 
-/// Phase 2: switch storage backend (stub — persists config in process only for now).
 async fn storage_switch(
     State(st): State<AppState>,
     Json(body): Json<StorageSwitch>,
 ) -> impl IntoResponse {
     let backend = StorageBackendKind::from_mode(&body.backend);
-    // Current manage runtime wires LocalFs stores at boot time; runtime backend hot-switch
-    // is declarative only until concrete backend registries are injected.
-    let applied = matches!(backend, StorageBackendKind::LocalFs);
+    let (applied, reason) = match validate_storage_backend(backend) {
+        Ok(()) => (true, None),
+        Err(msg) => (false, Some(msg)),
+    };
+
+    let persisted =
+        if applied { persist_storage_mode_to_config(&body.backend).is_ok() } else { false };
+
     if applied {
         let mut s = st.store.write().await;
         s.storage_mode = body.backend.clone();
     }
-    (StatusCode::OK, Json(StorageSwitchResponse { backend: body.backend, applied }))
+    (
+        StatusCode::OK,
+        Json(StorageSwitchResponse { backend: body.backend, applied, persisted, reason }),
+    )
+}
+
+fn validate_storage_backend(backend: StorageBackendKind) -> Result<(), String> {
+    match backend {
+        StorageBackendKind::LocalFs => Ok(()),
+        StorageBackendKind::Sqlite => Ok(()),
+        StorageBackendKind::Postgres => Ok(()),
+        StorageBackendKind::Redis => Ok(()),
+        StorageBackendKind::S3 => Ok(()),
+    }
+}
+
+fn config_path() -> PathBuf {
+    std::env::var("OPEN_HARNESS_CONFIG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("config.yaml"))
+}
+
+fn persist_storage_mode_to_config(mode: &str) -> std::io::Result<()> {
+    let path = config_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| "---\n".to_string());
+    let mut root: YamlValue =
+        serde_yaml::from_str(&content).unwrap_or_else(|_| YamlValue::Mapping(Default::default()));
+    if !matches!(root, YamlValue::Mapping(_)) {
+        root = YamlValue::Mapping(Default::default());
+    }
+    let storage_key = YamlValue::String("storage".to_string());
+    let mode_key = YamlValue::String("mode".to_string());
+    if let YamlValue::Mapping(map) = &mut root {
+        let storage_entry =
+            map.entry(storage_key).or_insert_with(|| YamlValue::Mapping(Default::default()));
+        if !matches!(storage_entry, YamlValue::Mapping(_)) {
+            *storage_entry = YamlValue::Mapping(Default::default());
+        }
+        if let YamlValue::Mapping(storage_map) = storage_entry {
+            storage_map.insert(mode_key, YamlValue::String(mode.to_string()));
+        }
+    }
+    let serialized = serde_yaml::to_string(&root).unwrap_or_default();
+    std::fs::write(path, serialized)
 }
 
 async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
@@ -703,4 +770,21 @@ async fn restart_channel(
     let mut s = st.store.write().await;
     s.channels.insert(name.clone(), "running".to_string());
     Json(json!({"name": name, "status": "restarted"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persist_storage_mode_updates_yaml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, "storage:\n  mode: local_fs\nmanage:\n  bind: 0.0.0.0:8081\n")
+            .expect("write");
+        std::env::set_var("OPEN_HARNESS_CONFIG_PATH", &config_path);
+        persist_storage_mode_to_config("sqlite").expect("persist");
+        let after = std::fs::read_to_string(&config_path).expect("read");
+        assert!(after.contains("mode: sqlite"));
+    }
 }

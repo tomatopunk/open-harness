@@ -66,6 +66,12 @@ pub struct ChannelsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RuntimeConfig {
+    #[serde(default = "default_runtime_engine")]
+    pub engine: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -153,6 +159,8 @@ pub struct AppConfig {
     pub manage: ManageConfig,
     #[serde(default = "default_channels")]
     pub channels: ChannelsConfig,
+    #[serde(default = "default_runtime")]
+    pub runtime: RuntimeConfig,
 }
 
 impl Default for AppConfig {
@@ -164,6 +172,7 @@ impl Default for AppConfig {
             gateway: default_gateway(),
             manage: default_manage(),
             channels: default_channels(),
+            runtime: default_runtime(),
         }
     }
 }
@@ -194,6 +203,14 @@ fn default_channel_enabled() -> Vec<String> {
 
 fn default_channels() -> ChannelsConfig {
     ChannelsConfig { enabled: default_channel_enabled() }
+}
+
+fn default_runtime_engine() -> String {
+    "langgraph-compatible".to_string()
+}
+
+fn default_runtime() -> RuntimeConfig {
+    RuntimeConfig { engine: default_runtime_engine() }
 }
 
 fn default_storage() -> StorageConfig {
@@ -281,6 +298,9 @@ channels:
   enabled:
     - dingtalk
     - wecom
+
+runtime:
+  engine: langgraph-compatible
 "#;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
