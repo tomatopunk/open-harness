@@ -28,9 +28,13 @@ use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+mod security;
+mod task_access;
 mod tasks;
 mod thread_delete;
 
+use security::{sanitize_path_component, sanitize_relative_path};
+use task_access::can_access_task;
 use tasks::{bump_task, is_terminal, prune_tasks, MAX_STREAM_CHUNKS};
 use thread_delete::ThreadDeleteEngine;
 
@@ -133,14 +137,19 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(local_fs_root.join("memory")).ok();
     }
 
-    let delete_engine =
-        ThreadDeleteEngine::new(threads_root.clone(), cfg.manage.langgraph_url.clone());
+    let langgraph_url = Arc::new(RwLock::new(cfg.manage.langgraph_url.clone()));
+    let delete_engine = ThreadDeleteEngine::new(threads_root.clone(), langgraph_url.clone());
 
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_manage_requests_total", "Manage API requests");
     metrics::describe_counter!("open_harness_manage_task_created_total", "Manage task created");
     metrics::describe_counter!("open_harness_manage_task_completed_total", "Manage task completed");
     metrics::describe_counter!("open_harness_manage_task_failed_total", "Manage task failed");
+    metrics::describe_counter!("open_harness_manage_task_forbidden_total", "Manage task forbidden");
+    metrics::describe_counter!(
+        "open_harness_manage_invalid_path_total",
+        "Manage invalid file path attempts"
+    );
     metrics::describe_counter!(
         "open_harness_manage_webhook_success_total",
         "Manage webhook success"
@@ -168,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
         storage: storage.clone(),
         tasks: Arc::new(dashmap::DashMap::new()),
         task_capacity: 1000,
-        langgraph_url: Arc::new(RwLock::new(cfg.manage.langgraph_url.clone())),
+        langgraph_url,
         http_client: reqwest::Client::new(),
         webhook_secret: cfg.manage.webhook_secret.clone(),
         auth_state: auth_state.clone(),
@@ -353,6 +362,17 @@ async fn dispatch_task(
     metrics::counter!("open_harness_manage_requests_total").increment(1);
     metrics::counter!("open_harness_manage_task_created_total").increment(1);
     let task_id = body.client_task_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    if let Some(existing) = st.tasks.get(&task_id) {
+        if existing.client_task_id.is_some()
+            && existing.tenant_id == auth_ctx.tenant_id
+            && existing.user_id == auth_ctx.user_id
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"task_id_conflict","task_id": task_id})),
+            );
+        }
+    }
     let now = now_ts();
     let task = TaskRecord {
         task_id: task_id.clone(),
@@ -379,41 +399,65 @@ async fn dispatch_task(
     (StatusCode::ACCEPTED, Json(json!({"task_id": task_id, "status": "queued"})))
 }
 
-async fn get_task(State(st): State<AppState>, Path(task_id): Path<String>) -> impl IntoResponse {
+async fn get_task(
+    State(st): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
     if let Some(task) = st.tasks.get(&task_id) {
+        if !can_access_task(&task, &auth_ctx) {
+            metrics::counter!("open_harness_manage_task_forbidden_total").increment(1);
+            return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
+        }
         return (StatusCode::OK, Json(json!(task.clone()))).into_response();
     }
     (StatusCode::NOT_FOUND, Json(json!({"error":"task_not_found"}))).into_response()
 }
 
-async fn stream_task(State(st): State<AppState>, Path(task_id): Path<String>) -> impl IntoResponse {
+async fn stream_task(
+    State(st): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(task_id): Path<String>,
+) -> impl IntoResponse {
     let body_stream = futures::stream::unfold(
-        (st, task_id, 0_u64, false),
-        |(st, task_id, mut seen, sent_end)| async move {
+        (st, task_id, auth_ctx, 0_u64, false),
+        |(st, task_id, auth_ctx, mut seen, sent_end)| async move {
             tokio::time::sleep(Duration::from_millis(800)).await;
             let Some(task) = st.tasks.get(&task_id).map(|v| v.clone()) else {
                 let payload =
                     bytes::Bytes::from("event: error\ndata: {\"error\":\"task_not_found\"}\n\n");
                 return Some((
                     Ok::<_, std::convert::Infallible>(payload),
-                    (st, task_id, seen, true),
+                    (st, task_id, auth_ctx, seen, true),
                 ));
             };
+            if !can_access_task(&task, &auth_ctx) {
+                metrics::counter!("open_harness_manage_task_forbidden_total").increment(1);
+                let payload =
+                    bytes::Bytes::from("event: error\ndata: {\"error\":\"forbidden\"}\n\n");
+                return Some((
+                    Ok::<_, std::convert::Infallible>(payload),
+                    (st, task_id, auth_ctx, seen, true),
+                ));
+            }
             if task.version > seen {
                 seen = task.version;
                 let payload = format!("event: task\ndata: {}\n\n", json!(task));
-                return Some((Ok(bytes::Bytes::from(payload)), (st, task_id, seen, false)));
+                return Some((
+                    Ok(bytes::Bytes::from(payload)),
+                    (st, task_id, auth_ctx, seen, false),
+                ));
             }
             if is_terminal(&task.status) && !sent_end {
                 return Some((
                     Ok(bytes::Bytes::from("event: end\ndata: {\"done\":true}\n\n")),
-                    (st, task_id, seen, true),
+                    (st, task_id, auth_ctx, seen, true),
                 ));
             }
             if sent_end {
                 return None;
             }
-            Some((Ok(bytes::Bytes::from_static(b"")), (st, task_id, seen, false)))
+            Some((Ok(bytes::Bytes::from_static(b"")), (st, task_id, auth_ctx, seen, false)))
         },
     );
     ([(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")], Body::from_stream(body_stream))
@@ -791,10 +835,14 @@ async fn upload_thread_files(
     }
     let mut files = Vec::new();
     while let Ok(Some(field)) = multipart.next_field().await {
-        let filename = field
+        let raw_filename = field
             .file_name()
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("upload-{}.bin", Uuid::new_v4()));
+        let Some(filename) = sanitize_path_component(&raw_filename) else {
+            metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+            continue;
+        };
         let bytes = match field.bytes().await {
             Ok(b) => b,
             Err(_) => continue,
@@ -827,6 +875,10 @@ async fn delete_thread_upload(
     State(st): State<AppState>,
     Path((thread_id, filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let Some(filename) = sanitize_path_component(&filename) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
+    };
     let path = st.threads_root.join(thread_id).join("uploads").join(filename);
     match tokio::fs::remove_file(path).await {
         Ok(_) => (StatusCode::NO_CONTENT, "").into_response(),
@@ -844,6 +896,10 @@ async fn get_thread_artifact(
     Path((thread_id, path)): Path<(String, String)>,
     Query(query): Query<ArtifactQuery>,
 ) -> impl IntoResponse {
+    let Some(path) = sanitize_relative_path(&path) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid artifact path").into_response();
+    };
     let full = st.threads_root.join(thread_id).join("artifacts").join(path);
     let bytes = match tokio::fs::read(&full).await {
         Ok(b) => b,
