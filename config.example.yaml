@@ -30,3 +30,21 @@ models:
     api_key: $OPENAI_API_KEY
     use_responses_api: true
     output_version: responses/v1
+
+gateway:
+  bind: 0.0.0.0:8080
+  langgraph_upstream: http://127.0.0.1:2024
+  auth:
+    enabled: false
+    api_keys: []
+    bearer_tokens: []
+
+manage:
+  bind: 0.0.0.0:8081
+  langgraph_url: http://127.0.0.1:2024
+  threads_root: .deer-flow/threads
+  auth:
+    enabled: false
+    api_keys: []
+    bearer_tokens: []
+  webhook_secret: null

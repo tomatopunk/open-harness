@@ -1,18 +1,24 @@
 use axum::{
-    extract::{Multipart, Path, Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{Extension, Multipart, Path, Query, State},
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use config_runtime::load_or_default;
+use hmac::{Hmac, Mac};
 use metrics_exporter_prometheus::PrometheusBuilder;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::Sha256;
 use state_abstraction::{
     LocalFsStateStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
 };
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -28,6 +34,63 @@ struct AppState {
     local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
     storage: Arc<LocalFsStateStore>,
+    tasks: Arc<dashmap::DashMap<String, TaskRecord>>,
+    task_capacity: usize,
+    langgraph_url: String,
+    http_client: reqwest::Client,
+    webhook_secret: Option<String>,
+}
+
+#[derive(Clone)]
+struct AuthSettings {
+    enabled: bool,
+    api_keys: Arc<Vec<String>>,
+    bearer_tokens: Arc<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+struct AuthContext {
+    tenant_id: String,
+    user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TaskRecord {
+    task_id: String,
+    thread_id: String,
+    status: TaskStatus,
+    created_at: i64,
+    updated_at: i64,
+    version: u64,
+    output_chunks: Vec<String>,
+    error: Option<String>,
+    callback_url: Option<String>,
+    stream: bool,
+    client_task_id: Option<String>,
+    tenant_id: String,
+    user_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TaskDispatchRequest {
+    input: serde_json::Value,
+    #[serde(default)]
+    configurable: Option<serde_json::Value>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(default)]
+    callback_url: Option<String>,
+    #[serde(default)]
+    client_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +143,17 @@ async fn main() -> anyhow::Result<()> {
 
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_manage_requests_total", "Manage API requests");
+    metrics::describe_counter!("open_harness_manage_task_created_total", "Manage task created");
+    metrics::describe_counter!("open_harness_manage_task_completed_total", "Manage task completed");
+    metrics::describe_counter!("open_harness_manage_task_failed_total", "Manage task failed");
+    metrics::describe_counter!(
+        "open_harness_manage_webhook_success_total",
+        "Manage webhook success"
+    );
+    metrics::describe_counter!(
+        "open_harness_manage_webhook_failure_total",
+        "Manage webhook failure"
+    );
 
     let mut channels = HashMap::new();
     channels.insert("dingtalk".to_string(), "running".to_string());
@@ -91,6 +165,11 @@ async fn main() -> anyhow::Result<()> {
         threads_root: threads_root.clone(),
         local_fs_root: local_fs_root.clone(),
         storage: storage.clone(),
+        tasks: Arc::new(dashmap::DashMap::new()),
+        task_capacity: 1000,
+        langgraph_url: cfg.manage.langgraph_url.clone(),
+        http_client: reqwest::Client::new(),
+        webhook_secret: cfg.manage.webhook_secret.clone(),
         store: Arc::new(RwLock::new(ManageStore {
             mcp_servers: json!({}),
             agents: HashMap::new(),
@@ -110,6 +189,11 @@ async fn main() -> anyhow::Result<()> {
             storage_mode: cfg.storage.mode.clone(),
         })),
     };
+    let auth_settings = auth_settings_from_config(
+        cfg.manage.auth.enabled,
+        cfg.manage.auth.api_keys.clone(),
+        cfg.manage.auth.bearer_tokens.clone(),
+    );
     bootstrap_storage(&state).await;
 
     let app = Router::new()
@@ -147,8 +231,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/channels/:name/restart", post(restart_channel))
         .route("/api/manage/threads/:thread_id", axum::routing::delete(delete_thread))
         .route("/api/manage/thread-delete-ops/:operation_id", get(get_delete_op))
+        .route("/api/manage/threads/:thread_id/tasks", post(dispatch_task))
+        .route("/api/manage/tasks/:task_id", get(get_task))
+        .route("/api/manage/tasks/:task_id/stream", get(stream_task))
         .route("/api/manage/admin/storage/switch", post(storage_switch))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(auth_settings, require_auth))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.manage.bind).await?;
@@ -191,6 +279,373 @@ async fn get_delete_op(
     match st.delete_engine.get_op(operation_id) {
         Some(op) => (StatusCode::OK, Json(json!(op))).into_response(),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+fn auth_settings_from_config(
+    enabled: bool,
+    api_keys: Vec<String>,
+    bearer_tokens: Vec<String>,
+) -> AuthSettings {
+    AuthSettings { enabled, api_keys: Arc::new(api_keys), bearer_tokens: Arc::new(bearer_tokens) }
+}
+
+fn is_public_path(path: &str) -> bool {
+    path == "/healthz" || path == "/metrics"
+}
+
+fn parse_bearer(value: &str) -> Option<&str> {
+    value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))
+}
+
+fn extract_auth_context(req: &Request<Body>) -> AuthContext {
+    let tenant_id = req
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("default")
+        .to_string();
+    let user_id = req
+        .headers()
+        .get("x-user-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    AuthContext { tenant_id, user_id }
+}
+
+fn is_authorized(req: &Request<Body>, settings: &AuthSettings) -> bool {
+    if let Some(v) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
+        if settings.api_keys.iter().any(|k| k == v) {
+            return true;
+        }
+    }
+    if let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        if let Some(token) = parse_bearer(v) {
+            if settings.bearer_tokens.iter().any(|k| k == token) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn require_auth(
+    State(settings): State<AuthSettings>,
+    mut req: Request<Body>,
+    next: Next,
+) -> axum::response::Response {
+    if is_public_path(req.uri().path()) {
+        return next.run(req).await;
+    }
+    if settings.enabled && !is_authorized(&req, &settings) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })))
+            .into_response();
+    }
+    let auth_ctx = extract_auth_context(&req);
+    req.extensions_mut().insert(auth_ctx);
+    next.run(req).await
+}
+
+fn now_ts() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn is_terminal(status: &TaskStatus) -> bool {
+    matches!(status, TaskStatus::Completed | TaskStatus::Failed)
+}
+
+fn prune_tasks(tasks: &dashmap::DashMap<String, TaskRecord>, capacity: usize) {
+    if tasks.len() <= capacity {
+        return;
+    }
+    let mut entries: Vec<(String, i64)> =
+        tasks.iter().map(|v| (v.key().clone(), v.value().updated_at)).collect();
+    entries.sort_by_key(|(_, ts)| *ts);
+    let remove_n = entries.len().saturating_sub(capacity);
+    for (task_id, _) in entries.into_iter().take(remove_n) {
+        tasks.remove(&task_id);
+    }
+}
+
+fn sign_payload(secret: &str, body: &str, timestamp: i64, nonce: &str) -> Option<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    let payload = format!("{timestamp}.{nonce}.{body}");
+    mac.update(payload.as_bytes());
+    Some(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
+}
+
+async fn post_webhook(st: &AppState, task: &TaskRecord) {
+    let Some(callback_url) = task.callback_url.clone() else {
+        return;
+    };
+    if Url::parse(&callback_url).is_err() {
+        tracing::warn!(task_id = %task.task_id, "invalid callback_url");
+        return;
+    }
+    let payload = json!({
+        "task_id": task.task_id,
+        "thread_id": task.thread_id,
+        "status": task.status,
+        "output_chunks": task.output_chunks,
+        "error": task.error,
+        "tenant_id": task.tenant_id,
+        "user_id": task.user_id,
+        "updated_at": task.updated_at
+    });
+    let body = payload.to_string();
+    let timestamp = now_ts();
+    let nonce = Uuid::new_v4().to_string();
+    let mut rb = st.http_client.post(callback_url).header("content-type", "application/json");
+    if let Some(secret) = st.webhook_secret.as_ref() {
+        if let Some(signature) = sign_payload(secret, &body, timestamp, &nonce) {
+            rb = rb
+                .header("x-open-harness-signature", signature)
+                .header("x-open-harness-timestamp", timestamp.to_string())
+                .header("x-open-harness-nonce", nonce);
+        }
+    }
+    match rb.body(body).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            metrics::counter!("open_harness_manage_webhook_success_total").increment(1);
+        }
+        Ok(resp) => {
+            metrics::counter!("open_harness_manage_webhook_failure_total").increment(1);
+            tracing::warn!(task_id = %task.task_id, status = %resp.status(), "webhook call failed");
+        }
+        Err(err) => {
+            metrics::counter!("open_harness_manage_webhook_failure_total").increment(1);
+            tracing::warn!(task_id = %task.task_id, error = %err, "webhook call error");
+        }
+    }
+}
+
+fn bump_task(
+    st: &AppState,
+    task_id: &str,
+    status: TaskStatus,
+    output: Option<String>,
+    error: Option<String>,
+) -> Option<TaskRecord> {
+    let mut updated = st.tasks.get(task_id)?.clone();
+    updated.status = status;
+    updated.updated_at = now_ts();
+    updated.version += 1;
+    if let Some(chunk) = output {
+        updated.output_chunks.push(chunk);
+        if updated.output_chunks.len() > 200 {
+            let drain_n = updated.output_chunks.len().saturating_sub(200);
+            updated.output_chunks.drain(0..drain_n);
+        }
+    }
+    if error.is_some() {
+        updated.error = error;
+    }
+    st.tasks.insert(task_id.to_string(), updated.clone());
+    Some(updated)
+}
+
+async fn dispatch_task(
+    State(st): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
+    Path(thread_id): Path<String>,
+    Json(body): Json<TaskDispatchRequest>,
+) -> impl IntoResponse {
+    metrics::counter!("open_harness_manage_requests_total").increment(1);
+    metrics::counter!("open_harness_manage_task_created_total").increment(1);
+    let task_id = body.client_task_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let now = now_ts();
+    let task = TaskRecord {
+        task_id: task_id.clone(),
+        thread_id: thread_id.clone(),
+        status: TaskStatus::Queued,
+        created_at: now,
+        updated_at: now,
+        version: 1,
+        output_chunks: Vec::new(),
+        error: None,
+        callback_url: body.callback_url.clone(),
+        stream: body.stream,
+        client_task_id: body.client_task_id.clone(),
+        tenant_id: auth_ctx.tenant_id.clone(),
+        user_id: auth_ctx.user_id.clone(),
+    };
+    st.tasks.insert(task_id.clone(), task.clone());
+    prune_tasks(&st.tasks, st.task_capacity);
+    let st_clone = st.clone();
+    let spawned_task_id = task_id.clone();
+    tokio::spawn(async move {
+        run_task_worker(st_clone, spawned_task_id, thread_id, body).await;
+    });
+    (StatusCode::ACCEPTED, Json(json!({"task_id": task_id, "status": "queued"})))
+}
+
+async fn get_task(State(st): State<AppState>, Path(task_id): Path<String>) -> impl IntoResponse {
+    if let Some(task) = st.tasks.get(&task_id) {
+        return (StatusCode::OK, Json(json!(task.clone()))).into_response();
+    }
+    (StatusCode::NOT_FOUND, Json(json!({"error":"task_not_found"}))).into_response()
+}
+
+async fn stream_task(State(st): State<AppState>, Path(task_id): Path<String>) -> impl IntoResponse {
+    let body_stream = futures::stream::unfold(
+        (st, task_id, 0_u64, false),
+        |(st, task_id, mut seen, sent_end)| async move {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let Some(task) = st.tasks.get(&task_id).map(|v| v.clone()) else {
+                let payload =
+                    bytes::Bytes::from("event: error\ndata: {\"error\":\"task_not_found\"}\n\n");
+                return Some((
+                    Ok::<_, std::convert::Infallible>(payload),
+                    (st, task_id, seen, true),
+                ));
+            };
+            if task.version > seen {
+                seen = task.version;
+                let payload = format!("event: task\ndata: {}\n\n", json!(task));
+                return Some((Ok(bytes::Bytes::from(payload)), (st, task_id, seen, false)));
+            }
+            if is_terminal(&task.status) && !sent_end {
+                return Some((
+                    Ok(bytes::Bytes::from("event: end\ndata: {\"done\":true}\n\n")),
+                    (st, task_id, seen, true),
+                ));
+            }
+            if sent_end {
+                return None;
+            }
+            Some((Ok(bytes::Bytes::from_static(b"")), (st, task_id, seen, false)))
+        },
+    );
+    ([(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")], Body::from_stream(body_stream))
+        .into_response()
+}
+
+async fn run_task_worker(
+    st: AppState,
+    task_id: String,
+    thread_id: String,
+    body: TaskDispatchRequest,
+) {
+    let Some(task) = bump_task(&st, &task_id, TaskStatus::Running, None, None) else {
+        return;
+    };
+    post_webhook(&st, &task).await;
+    let run_url = if body.stream {
+        format!("{}/threads/{thread_id}/runs/stream", st.langgraph_url.trim_end_matches('/'))
+    } else {
+        format!("{}/threads/{thread_id}/runs", st.langgraph_url.trim_end_matches('/'))
+    };
+    let run_req = json!({
+        "input": body.input,
+        "config": {
+            "configurable": body.configurable.unwrap_or_else(|| json!({}))
+        },
+        "stream_mode": ["values", "messages-tuple", "end", "error"]
+    });
+    if body.stream {
+        match st.http_client.post(run_url).json(&run_req).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let mut stream = resp.bytes_stream();
+                let mut total = 0usize;
+                while let Some(next) = futures::StreamExt::next(&mut stream).await {
+                    match next {
+                        Ok(chunk) => {
+                            if total > 256 {
+                                continue;
+                            }
+                            let payload = String::from_utf8_lossy(&chunk).to_string();
+                            let _ =
+                                bump_task(&st, &task_id, TaskStatus::Running, Some(payload), None);
+                            total += 1;
+                        }
+                        Err(err) => {
+                            let failed = bump_task(
+                                &st,
+                                &task_id,
+                                TaskStatus::Failed,
+                                None,
+                                Some(format!("stream read failed: {err}")),
+                            );
+                            if let Some(task) = failed {
+                                metrics::counter!("open_harness_manage_task_failed_total")
+                                    .increment(1);
+                                post_webhook(&st, &task).await;
+                            }
+                            return;
+                        }
+                    }
+                }
+                if let Some(done) = bump_task(&st, &task_id, TaskStatus::Completed, None, None) {
+                    metrics::counter!("open_harness_manage_task_completed_total").increment(1);
+                    post_webhook(&st, &done).await;
+                }
+            }
+            Ok(resp) => {
+                let failed = bump_task(
+                    &st,
+                    &task_id,
+                    TaskStatus::Failed,
+                    None,
+                    Some(format!("upstream status {}", resp.status())),
+                );
+                if let Some(task) = failed {
+                    metrics::counter!("open_harness_manage_task_failed_total").increment(1);
+                    post_webhook(&st, &task).await;
+                }
+            }
+            Err(err) => {
+                let failed = bump_task(
+                    &st,
+                    &task_id,
+                    TaskStatus::Failed,
+                    None,
+                    Some(format!("upstream error {err}")),
+                );
+                if let Some(task) = failed {
+                    metrics::counter!("open_harness_manage_task_failed_total").increment(1);
+                    post_webhook(&st, &task).await;
+                }
+            }
+        }
+        return;
+    }
+
+    match st.http_client.post(run_url).json(&run_req).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let output = resp.text().await.unwrap_or_default();
+            if let Some(done) = bump_task(&st, &task_id, TaskStatus::Completed, Some(output), None)
+            {
+                metrics::counter!("open_harness_manage_task_completed_total").increment(1);
+                post_webhook(&st, &done).await;
+            }
+        }
+        Ok(resp) => {
+            let failed = bump_task(
+                &st,
+                &task_id,
+                TaskStatus::Failed,
+                None,
+                Some(format!("upstream status {}", resp.status())),
+            );
+            if let Some(task) = failed {
+                metrics::counter!("open_harness_manage_task_failed_total").increment(1);
+                post_webhook(&st, &task).await;
+            }
+        }
+        Err(err) => {
+            let failed = bump_task(
+                &st,
+                &task_id,
+                TaskStatus::Failed,
+                None,
+                Some(format!("upstream error {err}")),
+            );
+            if let Some(task) = failed {
+                metrics::counter!("open_harness_manage_task_failed_total").increment(1);
+                post_webhook(&st, &task).await;
+            }
+        }
     }
 }
 

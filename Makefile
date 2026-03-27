@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check lint test pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke acceptance docker-up docker-down clean
 
 help:
 	@echo "open-harness common commands"
@@ -11,6 +11,7 @@ help:
 	@echo "  make check            - run fmt-check + lint + test"
 	@echo "  make build            - build workspace"
 	@echo "  make smoke            - run curl smoke script"
+	@echo "  make acceptance       - run acceptance script"
 	@echo "  make run-gateway      - run gateway service"
 	@echo "  make run-manage       - run manage service"
 	@echo "  make run-channel      - run channel service"
@@ -52,6 +53,9 @@ run-orchestrator:
 
 smoke:
 	./scripts/smoke.sh
+
+acceptance:
+	./scripts/acceptance.sh
 
 docker-up:
 	docker compose -f deploy/docker/docker-compose.yml up --build
