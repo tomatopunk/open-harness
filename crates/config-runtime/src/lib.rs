@@ -60,6 +60,12 @@ pub struct ManageConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChannelsConfig {
+    #[serde(default = "default_channel_enabled")]
+    pub enabled: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -145,6 +151,8 @@ pub struct AppConfig {
     pub gateway: GatewayConfig,
     #[serde(default = "default_manage")]
     pub manage: ManageConfig,
+    #[serde(default = "default_channels")]
+    pub channels: ChannelsConfig,
 }
 
 impl Default for AppConfig {
@@ -155,6 +163,7 @@ impl Default for AppConfig {
             models: default_models(),
             gateway: default_gateway(),
             manage: default_manage(),
+            channels: default_channels(),
         }
     }
 }
@@ -177,6 +186,14 @@ fn default_manage() -> ManageConfig {
         auth: default_auth(),
         webhook_secret: None,
     }
+}
+
+fn default_channel_enabled() -> Vec<String> {
+    vec!["dingtalk".into(), "wecom".into()]
+}
+
+fn default_channels() -> ChannelsConfig {
+    ChannelsConfig { enabled: default_channel_enabled() }
 }
 
 fn default_storage() -> StorageConfig {
@@ -252,6 +269,11 @@ manage:
     api_keys: []
     bearer_tokens: []
   webhook_secret: null
+
+channels:
+  enabled:
+    - dingtalk
+    - wecom
 "#;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);

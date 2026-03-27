@@ -4,9 +4,8 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use channel_dingtalk::DingTalkDriver;
+use channel_bootstrap::register_builtin_channels;
 use channel_runtime::ChannelRegistry;
-use channel_wecom::WeComDriver;
 use config_runtime::load_or_default;
 use reqwest::Client;
 use serde::Serialize;
@@ -33,14 +32,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let ding = DingTalkDriver {
-        secret: std::env::var("DINGTALK_SECRET").unwrap_or_else(|_| "dev".into()),
-    };
-
     let mut registry = ChannelRegistry::new();
-    registry.register(Box::new(ding.clone()));
-    registry.register(Box::new(WeComDriver));
     let cfg = load_or_default();
+    let registered_platforms = register_builtin_channels(&mut registry, &cfg);
     let model_name =
         cfg.models.first().map(|m| m.name.clone()).unwrap_or_else(|| "gpt-4".to_string());
 
@@ -59,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let app = app.with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:8082".parse()?;
-    tracing::info!("open-harness-channel on {addr}");
+    tracing::info!(?registered_platforms, "open-harness-channel on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

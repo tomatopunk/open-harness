@@ -54,7 +54,14 @@ Env overrides (nested with `__`):
 - `OPEN_HARNESS_MANAGE__LANGGRAPH_URL` — used for remote thread `DELETE`
 - `OPEN_HARNESS_MANAGE__THREADS_ROOT` — local thread dirs (default `.deer-flow/threads`)
 - `OPEN_HARNESS_CHANNEL__GATEWAY_URL` — channel service callback target (default `http://127.0.0.1:8080`)
+- `OPEN_HARNESS_CHANNELS__ENABLED` — enabled IM channels list (defaults to `dingtalk,wecom` in config)
 - `OPEN_HARNESS_CONFIG_PATH` — override config yaml path
+
+IM channel bootstrap:
+
+- `apps/channel` only depends on `channel-runtime` abstraction + `channel-bootstrap` assembly crate.
+- Built-in drivers currently include `dingtalk` and `wecom`, configured by `channels.enabled` in `config.yaml`.
+- `apps/manage` channel status list reads the same configured channel list (no hardcoded platform names).
 
 ## API Contract
 

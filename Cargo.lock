@@ -384,6 +384,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "channel-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "channel-dingtalk",
+ "channel-runtime",
+ "channel-wecom",
+ "config-runtime",
+]
+
+[[package]]
 name = "channel-dingtalk"
 version = "0.1.0"
 dependencies = [
@@ -1958,9 +1968,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "channel-dingtalk",
+ "channel-bootstrap",
  "channel-runtime",
- "channel-wecom",
  "config-runtime",
  "reqwest",
  "serde",
@@ -2005,6 +2014,7 @@ dependencies = [
  "axum",
  "base64",
  "bytes",
+ "channel-bootstrap",
  "chrono",
  "config-runtime",
  "dashmap",

@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use channel_bootstrap::configured_channels;
 use config_runtime::load_or_default;
 use hmac::{Hmac, Mac};
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -155,9 +156,8 @@ async fn main() -> anyhow::Result<()> {
         "Manage webhook failure"
     );
 
-    let mut channels = HashMap::new();
-    channels.insert("dingtalk".to_string(), "running".to_string());
-    channels.insert("wecom".to_string(), "running".to_string());
+    let channels =
+        configured_channels(&cfg).into_iter().map(|name| (name, "running".to_string())).collect();
     let storage = Arc::new(LocalFsStateStore::new(local_fs_root.clone()));
 
     let state = AppState {

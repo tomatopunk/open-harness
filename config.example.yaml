@@ -48,3 +48,8 @@ manage:
     api_keys: []
     bearer_tokens: []
   webhook_secret: null
+
+channels:
+  enabled:
+    - dingtalk
+    - wecom
