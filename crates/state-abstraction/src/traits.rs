@@ -67,6 +67,23 @@ pub struct SandboxExecution {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageTaskRecord {
+    pub task_id: String,
+    pub thread_id: String,
+    pub status: String,
+    pub output_chunks: Vec<String>,
+    pub error: Option<String>,
+    pub callback_url: Option<String>,
+    pub stream: bool,
+    pub client_task_id: Option<String>,
+    pub tenant_id: String,
+    pub user_id: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub version: i64,
+}
+
 #[async_trait]
 pub trait ThreadMetaStore: Send + Sync {
     async fn upsert_thread(&self, meta: &ThreadMeta) -> Result<(), StateError>;
@@ -120,4 +137,14 @@ pub trait SubagentTaskStore: Send + Sync {
 pub trait SandboxExecutionStore: Send + Sync {
     async fn append_execution(&self, exec: &SandboxExecution) -> Result<(), StateError>;
     async fn list_executions(&self, thread_id: Uuid) -> Result<Vec<SandboxExecution>, StateError>;
+}
+
+#[async_trait]
+pub trait ManageTaskStore: Send + Sync {
+    async fn upsert_task(&self, task: &ManageTaskRecord) -> Result<(), StateError>;
+    async fn get_task(&self, task_id: &str) -> Result<Option<ManageTaskRecord>, StateError>;
+    async fn list_tasks_by_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<ManageTaskRecord>, StateError>;
 }
