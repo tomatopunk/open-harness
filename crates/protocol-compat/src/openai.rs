@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::Configurable;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAiChatCompletionsRequest {
     pub model: String,
@@ -18,6 +20,12 @@ pub struct OpenAiChatCompletionsRequest {
     pub tool_choice: Option<serde_json::Value>,
     #[serde(default)]
     pub response_format: Option<serde_json::Value>,
+    /// Optional passthrough runtime knobs for LangGraph configurable.
+    #[serde(default)]
+    pub configurable: Option<Configurable>,
+    /// Optional stream mode override for upstream LangGraph runs/stream.
+    #[serde(default)]
+    pub stream_mode: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

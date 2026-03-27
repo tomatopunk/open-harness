@@ -37,6 +37,8 @@ pub struct StorageConfig {
 pub struct GatewayConfig {
     pub bind: String,
     pub langgraph_upstream: String,
+    #[serde(default = "default_auth")]
+    pub auth: AuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -51,6 +53,20 @@ pub struct ManageConfig {
     pub sqlite_url: Option<String>,
     #[serde(default)]
     pub postgres_url: Option<String>,
+    #[serde(default = "default_auth")]
+    pub auth: AuthConfig,
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+    #[serde(default)]
+    pub bearer_tokens: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -92,6 +108,10 @@ fn default_local_fs_root() -> String {
 
 fn default_s3_prefix() -> String {
     "open-harness".into()
+}
+
+fn default_auth() -> AuthConfig {
+    AuthConfig { enabled: false, api_keys: Vec::new(), bearer_tokens: Vec::new() }
 }
 
 fn default_config_path() -> String {
@@ -143,6 +163,7 @@ fn default_gateway() -> GatewayConfig {
     GatewayConfig {
         bind: "0.0.0.0:8080".into(),
         langgraph_upstream: "http://127.0.0.1:2024".into(),
+        auth: default_auth(),
     }
 }
 
@@ -153,6 +174,8 @@ fn default_manage() -> ManageConfig {
         threads_root: default_threads_root(),
         sqlite_url: None,
         postgres_url: None,
+        auth: default_auth(),
+        webhook_secret: None,
     }
 }
 
@@ -211,6 +234,24 @@ models:
     api_key: $OPENAI_API_KEY
     use_responses_api: true
     output_version: responses/v1
+
+gateway:
+  bind: 0.0.0.0:8080
+  langgraph_upstream: http://127.0.0.1:2024
+  auth:
+    enabled: false
+    api_keys: []
+    bearer_tokens: []
+
+manage:
+  bind: 0.0.0.0:8081
+  langgraph_url: http://127.0.0.1:2024
+  threads_root: .deer-flow/threads
+  auth:
+    enabled: false
+    api_keys: []
+    bearer_tokens: []
+  webhook_secret: null
 "#;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);

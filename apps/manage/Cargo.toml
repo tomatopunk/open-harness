@@ -24,6 +24,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 dashmap = { workspace = true }
+futures = { workspace = true }
+bytes = "1"
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 state-abstraction = { path = "../../crates/state-abstraction" }

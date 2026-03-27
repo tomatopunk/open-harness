@@ -1,13 +1,14 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Extension, State},
     http::{header, Request, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
-use config_runtime::{load_or_default, resolve_env_var_ref, ModelConfig};
+use config_runtime::{load_or_default, resolve_env_var_ref, AuthConfig, ModelConfig};
 use dashmap::DashMap;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use protocol_compat::{
@@ -24,6 +25,19 @@ struct AppState {
     client: reqwest::Client,
     conversation_map: Arc<DashMap<String, String>>,
     models: Vec<ModelConfig>,
+}
+
+#[derive(Clone)]
+struct AuthSettings {
+    enabled: bool,
+    api_keys: Arc<Vec<String>>,
+    bearer_tokens: Arc<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+struct AuthContext {
+    tenant_id: String,
+    user_id: String,
 }
 
 #[tokio::main]
@@ -44,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         conversation_map: Arc::new(DashMap::new()),
         models: cfg.models.clone(),
     };
+    let auth_settings = auth_settings_from_config(&cfg.gateway.auth);
 
     let app = Router::new()
         .route("/healthz", get(health))
@@ -59,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/langgraph/demo-stream", get(demo_stream))
         .fallback(proxy_langgraph)
         .with_state(state)
+        .layer(middleware::from_fn_with_state(auth_settings, require_auth))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.gateway.bind).await?;
@@ -97,6 +113,7 @@ async fn openai_models(State(st): State<AppState>) -> impl IntoResponse {
 
 async fn openai_chat_completions(
     State(st): State<AppState>,
+    Extension(auth_ctx): Extension<AuthContext>,
     Json(body): Json<OpenAiChatCompletionsRequest>,
 ) -> Response {
     let request_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
@@ -109,37 +126,60 @@ async fn openai_chat_completions(
             .into_response();
     }
 
-    let thread_key = body.user.unwrap_or_else(|| "default".to_string());
-    let thread_id =
-        st.conversation_map.entry(thread_key).or_insert_with(|| Uuid::new_v4().to_string()).clone();
+    let mut configurable = body.configurable.clone().unwrap_or_default();
+    let thread_key = body.user.clone().unwrap_or_else(|| "default".to_string());
+    let thread_id = configurable.thread_id.clone().unwrap_or_else(|| {
+        st.conversation_map
+            .entry(thread_key.clone())
+            .or_insert_with(|| Uuid::new_v4().to_string())
+            .clone()
+    });
+    st.conversation_map.insert(thread_key, thread_id.clone());
 
     if let Err(e) = ensure_thread(&st, &thread_id).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response();
     }
 
-    let user_content = body
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(|m| m.content.clone())
-        .unwrap_or_default();
+    let mut input = json!({
+        "messages": body.messages
+    });
+    if let Some(tools) = body.tools.clone() {
+        input["tools"] = json!(tools);
+    }
+    if let Some(tool_choice) = body.tool_choice.clone() {
+        input["tool_choice"] = tool_choice;
+    }
+    if let Some(response_format) = body.response_format.clone() {
+        input["response_format"] = response_format;
+    }
+    input["metadata"] = json!({
+        "tenant_id": auth_ctx.tenant_id,
+        "user_id": auth_ctx.user_id
+    });
+
+    configurable.thread_id = Some(thread_id.clone());
+    configurable.model_name = Some(body.model.clone());
+    configurable.api_key = model_api_key(&st.models, &body.model);
+    configurable.thinking_enabled.get_or_insert(false);
+    configurable.is_plan_mode.get_or_insert(false);
+    configurable.subagent_enabled.get_or_insert(false);
+    configurable.skills_enabled.get_or_insert(true);
+    configurable.sandbox_enabled.get_or_insert(false);
+    let stream_mode = body.stream_mode.clone().unwrap_or_else(|| {
+        vec![
+            "values".to_string(),
+            "messages-tuple".to_string(),
+            "end".to_string(),
+            "error".to_string(),
+        ]
+    });
 
     let run_req = json!({
-        "input": {
-            "messages": [{ "role": "user", "content": user_content }]
-        },
+        "input": input,
         "config": {
-            "configurable": {
-                "thread_id": thread_id,
-                "model_name": body.model,
-                "api_key": model_api_key(&st.models, &body.model),
-                "thinking_enabled": false,
-                "is_plan_mode": false,
-                "subagent_enabled": false
-            }
+            "configurable": configurable
         },
-        "stream_mode": ["values", "messages-tuple", "end", "error"]
+        "stream_mode": stream_mode
     });
 
     let url = format!(
@@ -258,6 +298,71 @@ async fn openai_chat_completions(
         }]
     }))
     .into_response()
+}
+
+fn auth_settings_from_config(cfg: &AuthConfig) -> AuthSettings {
+    AuthSettings {
+        enabled: cfg.enabled,
+        api_keys: Arc::new(cfg.api_keys.clone()),
+        bearer_tokens: Arc::new(cfg.bearer_tokens.clone()),
+    }
+}
+
+fn is_public_path(path: &str) -> bool {
+    path == "/healthz" || path == "/metrics"
+}
+
+fn parse_bearer(value: &str) -> Option<&str> {
+    value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))
+}
+
+fn extract_auth_context(req: &Request<Body>) -> AuthContext {
+    let tenant_id = req
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("default")
+        .to_string();
+    let user_id = req
+        .headers()
+        .get("x-user-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_string();
+    AuthContext { tenant_id, user_id }
+}
+
+fn is_authorized(req: &Request<Body>, settings: &AuthSettings) -> bool {
+    if let Some(v) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
+        if settings.api_keys.iter().any(|k| k == v) {
+            return true;
+        }
+    }
+    if let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        if let Some(token) = parse_bearer(v) {
+            if settings.bearer_tokens.iter().any(|k| k == token) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn require_auth(
+    State(settings): State<AuthSettings>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    if is_public_path(req.uri().path()) {
+        return next.run(req).await;
+    }
+    if settings.enabled && !is_authorized(&req, &settings) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized" })))
+            .into_response();
+    }
+    let auth_ctx = extract_auth_context(&req);
+    req.extensions_mut().insert(auth_ctx);
+    next.run(req).await
 }
 
 fn model_api_key(models: &[ModelConfig], model_name: &str) -> Option<String> {
