@@ -10,3 +10,4 @@ channel-dingtalk = { path = "../channel-dingtalk" }
 channel-wecom = { path = "../channel-wecom" }
 config-runtime = { path = "../config-runtime" }
 tracing = { workspace = true }
+reqwest = { workspace = true }

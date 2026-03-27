@@ -15,13 +15,21 @@ pub fn register_builtin_channels(
         match platform.as_str() {
             DINGTALK => {
                 if let Some(secret) = resolve_dingtalk_secret() {
-                    let driver = DingTalkDriver { secret };
+                    let driver = DingTalkDriver {
+                        secret,
+                        webhook_url: std::env::var("DINGTALK_WEBHOOK_URL").ok(),
+                        client: reqwest::Client::new(),
+                    };
                     registry.register(Box::new(driver));
                 }
             }
             WECOM => {
                 let secret = std::env::var("WECOM_SECRET").ok();
-                registry.register(Box::new(WeComDriver { secret }));
+                registry.register(Box::new(WeComDriver {
+                    secret,
+                    webhook_url: std::env::var("WECOM_WEBHOOK_URL").ok(),
+                    client: reqwest::Client::new(),
+                }));
             }
             _ => {
                 tracing::warn!(platform = %platform, "unsupported channel platform configured");

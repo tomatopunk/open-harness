@@ -10,6 +10,8 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct WeComDriver {
     pub secret: Option<String>,
+    pub webhook_url: Option<String>,
+    pub client: reqwest::Client,
 }
 
 #[async_trait]
@@ -74,7 +76,28 @@ impl ChannelDriver for WeComDriver {
         })
     }
 
-    async fn send_message(&self, _chat_id: &str, _text: &str) -> Result<(), ChannelError> {
+    async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), ChannelError> {
+        let Some(webhook_url) = &self.webhook_url else {
+            return Ok(());
+        };
+        let body = serde_json::json!({
+            "chatid": chat_id,
+            "msgtype": "text",
+            "text": {"content": text}
+        });
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChannelError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ChannelError::Upstream(format!(
+                "wecom send failed with status {}",
+                response.status()
+            )));
+        }
         Ok(())
     }
 }
@@ -89,7 +112,8 @@ mod tests {
 
     #[tokio::test]
     async fn accepts_when_secret_disabled() {
-        let driver = WeComDriver { secret: None };
+        let driver =
+            WeComDriver { secret: None, webhook_url: None, client: reqwest::Client::new() };
         let headers = HashMap::new();
         assert!(driver.verify_signature(&headers, b"{}").await.is_ok());
     }

@@ -10,6 +10,8 @@ use std::collections::HashMap;
 #[derive(Clone)]
 pub struct DingTalkDriver {
     pub secret: String,
+    pub webhook_url: Option<String>,
+    pub client: reqwest::Client,
 }
 
 #[async_trait]
@@ -94,7 +96,28 @@ impl ChannelDriver for DingTalkDriver {
         Ok(NormalizedCommand { command: cmd, args: vec![], thread_hint: None })
     }
 
-    async fn send_message(&self, _chat_id: &str, _text: &str) -> Result<(), ChannelError> {
+    async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), ChannelError> {
+        let Some(webhook_url) = &self.webhook_url else {
+            return Ok(());
+        };
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "msgtype": "text",
+            "text": {"content": text}
+        });
+        let response = self
+            .client
+            .post(webhook_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ChannelError::Upstream(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(ChannelError::Upstream(format!(
+                "dingtalk send failed with status {}",
+                response.status()
+            )));
+        }
         Ok(())
     }
 }
@@ -109,7 +132,11 @@ mod tests {
 
     #[tokio::test]
     async fn signature_fails_when_missing() {
-        let driver = DingTalkDriver { secret: "s".to_string() };
+        let driver = DingTalkDriver {
+            secret: "s".to_string(),
+            webhook_url: None,
+            client: reqwest::Client::new(),
+        };
         let headers = HashMap::new();
         assert!(driver.verify_signature(&headers, b"{}").await.is_err());
     }
