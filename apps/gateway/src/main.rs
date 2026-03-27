@@ -99,8 +99,13 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(&cfg.gateway.bind).await?;
     tracing::info!("open-harness-gateway listening on {}", cfg.gateway.bind);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    metrics::counter!("open_harness_gateway_shutdown_total").increment(1);
 }
 
 async fn health() -> impl IntoResponse {
@@ -423,5 +428,49 @@ async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
             Json(json!({"reloaded": false, "error": err.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_conversation_map_removes_expired_entries() {
+        let map = DashMap::new();
+        map.insert(
+            "expired".to_string(),
+            ConversationEntry {
+                thread_id: "t1".to_string(),
+                updated_at: Instant::now() - CONVERSATION_TTL - Duration::from_secs(1),
+            },
+        );
+        map.insert(
+            "fresh".to_string(),
+            ConversationEntry { thread_id: "t2".to_string(), updated_at: Instant::now() },
+        );
+
+        prune_conversation_map(&map);
+
+        assert!(!map.contains_key("expired"));
+        assert!(map.contains_key("fresh"));
+    }
+
+    #[test]
+    fn prune_conversation_map_enforces_max_capacity() {
+        let map = DashMap::new();
+        for i in 0..(MAX_CONVERSATIONS + 8) {
+            map.insert(
+                format!("k{i}"),
+                ConversationEntry {
+                    thread_id: format!("t{i}"),
+                    updated_at: Instant::now() - Duration::from_secs(i as u64),
+                },
+            );
+        }
+
+        prune_conversation_map(&map);
+
+        assert_eq!(map.len(), MAX_CONVERSATIONS);
     }
 }
