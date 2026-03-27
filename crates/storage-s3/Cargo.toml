@@ -11,4 +11,7 @@ object_store = { workspace = true }
 bytes = "1"
 tokio = { workspace = true }
 uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }
