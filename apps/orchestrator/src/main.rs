@@ -4,7 +4,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
 use runtime_kernel::RuntimeEvent;
-use runtime_llm_chain_adapter::LlmChainAdapter;
+use runtime_llm_chain_adapter::{LlmChainAdapter, RuntimeRunMetadata, RuntimeRunOutput};
 use sandbox_runtime::{LocalSandbox, Sandbox, SandboxRequest};
 use serde::Deserialize;
 use serde_json::json;
@@ -23,16 +23,23 @@ struct AppState {
     runtime_engine: String,
 }
 
-async fn run_runtime(
+async fn run_runtime_output(
     _engine: &str,
     configurable: Configurable,
     messages: Vec<serde_json::Value>,
-) -> Vec<RuntimeEvent> {
+) -> RuntimeRunOutput {
     let adapter = LlmChainAdapter::default();
-    adapter
-        .run(configurable, messages)
-        .await
-        .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
+    adapter.run_with_output(configurable, messages).await.unwrap_or_else(|e| {
+        let mut meta = RuntimeRunMetadata::default();
+        meta.warnings.push(format!("runtime_error: {e}"));
+        RuntimeRunOutput {
+            metadata: meta,
+            events: vec![RuntimeEvent::Error { message: e.to_string() }],
+            tool_calls: 0,
+            blocked_tools: Vec::new(),
+            loop_detected: false,
+        }
+    })
 }
 
 async fn pipeline_check(
@@ -40,13 +47,14 @@ async fn pipeline_check(
 ) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
     let ctx = pipeline.prepare(Configurable::default()).await.expect("pipeline");
-    let events = run_runtime(&st.runtime_engine, Configurable::default(), vec![]).await;
+    let out = run_runtime_output(&st.runtime_engine, Configurable::default(), vec![]).await;
     Json(json!({
         "middleware": "ok",
         "configurable": ctx.configurable,
         "token_usage_estimate": ctx.token_usage_estimate,
         "runtime_engine": st.runtime_engine,
-        "events_count": events.len()
+        "events_count": out.events.len(),
+        "runtime_metadata": out.metadata
     }))
 }
 
@@ -158,8 +166,9 @@ async fn run_orchestrate_with_state(
     let subagent_records = st.store.list_tasks_by_thread(thread_id).await.unwrap_or_default();
     let sandbox_records = st.store.list_executions(thread_id).await.unwrap_or_default();
     let skills = st.store.list_skills().await.unwrap_or_default();
-    let events =
-        run_runtime(&st.runtime_engine, body.configurable.clone(), body.messages.clone()).await;
+    let out =
+        run_runtime_output(&st.runtime_engine, body.configurable.clone(), body.messages.clone())
+            .await;
 
     Json(json!({
         "ok": true,
@@ -172,7 +181,8 @@ async fn run_orchestrate_with_state(
         "tool_records_count": tool_records.len(),
         "subagent_tasks_count": subagent_records.len(),
         "sandbox_executions_count": sandbox_records.len(),
-        "events": events
+        "runtime_metadata": out.metadata,
+        "events": out.events
     }))
 }
 
