@@ -7,11 +7,14 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use chrono::{TimeZone, Utc};
+use dashmap::mapref::entry::Entry;
 use hmac::{Hmac, Mac};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
+use state_abstraction::ManageTaskRecord;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -65,6 +68,49 @@ fn sign_payload(secret: &str, body: &str, timestamp: i64, nonce: &str) -> Option
     Some(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
 }
 
+const WEBHOOK_RETRY_MAX_ATTEMPTS: usize = 3;
+const WEBHOOK_RETRY_BASE_MS: u64 = 250;
+
+fn task_status_name(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+    }
+}
+
+fn task_to_store_record(task: &TaskRecord) -> Option<ManageTaskRecord> {
+    let created_at = Utc.timestamp_opt(task.created_at, 0).single()?;
+    let updated_at = Utc.timestamp_opt(task.updated_at, 0).single()?;
+    let version = i64::try_from(task.version).ok()?;
+    Some(ManageTaskRecord {
+        task_id: task.task_id.clone(),
+        thread_id: task.thread_id.clone(),
+        status: task_status_name(&task.status).to_string(),
+        output_chunks: task.output_chunks.clone(),
+        error: task.error.clone(),
+        callback_url: task.callback_url.clone(),
+        stream: task.stream,
+        client_task_id: task.client_task_id.clone(),
+        tenant_id: task.tenant_id.clone(),
+        user_id: task.user_id.clone(),
+        created_at,
+        updated_at,
+        version,
+    })
+}
+
+async fn persist_task_record(st: &AppState, task: &TaskRecord) {
+    let Some(record) = task_to_store_record(task) else {
+        tracing::warn!(task_id = %task.task_id, "skip persistence due to invalid task timestamp/version");
+        return;
+    };
+    if let Err(err) = st.manage_tasks.upsert_task(&record).await {
+        tracing::warn!(task_id = %task.task_id, error = %err, "persist manage task failed");
+    }
+}
+
 async fn post_webhook(st: &AppState, task: &TaskRecord) {
     let Some(callback_url) = task.callback_url.clone() else {
         return;
@@ -84,30 +130,64 @@ async fn post_webhook(st: &AppState, task: &TaskRecord) {
         "updated_at": task.updated_at
     });
     let body = payload.to_string();
-    let timestamp = now_ts();
-    let nonce = Uuid::new_v4().to_string();
-    let mut rb = st.http_client.post(callback_url).header("content-type", "application/json");
-    if let Some(secret) = st.webhook_secret.as_ref() {
-        if let Some(signature) = sign_payload(secret, &body, timestamp, &nonce) {
-            rb = rb
-                .header("x-open-harness-signature", signature)
-                .header("x-open-harness-timestamp", timestamp.to_string())
-                .header("x-open-harness-nonce", nonce);
+    let mut delay = Duration::from_millis(WEBHOOK_RETRY_BASE_MS);
+    for attempt in 1..=WEBHOOK_RETRY_MAX_ATTEMPTS {
+        let timestamp = now_ts();
+        let nonce = Uuid::new_v4().to_string();
+        let mut req = st.http_client.post(&callback_url).header("content-type", "application/json");
+        if let Some(secret) = st.webhook_secret.as_ref() {
+            if let Some(signature) = sign_payload(secret, &body, timestamp, &nonce) {
+                req = req
+                    .header("x-open-harness-signature", signature)
+                    .header("x-open-harness-timestamp", timestamp.to_string())
+                    .header("x-open-harness-nonce", nonce);
+            }
+        }
+        let req = req.body(body.clone());
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                metrics::counter!("open_harness_manage_webhook_success_total").increment(1);
+                return;
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    task_id = %task.task_id,
+                    attempt,
+                    status = %resp.status(),
+                    "webhook call failed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(task_id = %task.task_id, attempt, error = %err, "webhook call error");
+            }
+        }
+        if attempt < WEBHOOK_RETRY_MAX_ATTEMPTS {
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2);
         }
     }
-    match rb.body(body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            metrics::counter!("open_harness_manage_webhook_success_total").increment(1);
-        }
-        Ok(resp) => {
-            metrics::counter!("open_harness_manage_webhook_failure_total").increment(1);
-            tracing::warn!(task_id = %task.task_id, status = %resp.status(), "webhook call failed");
-        }
-        Err(err) => {
-            metrics::counter!("open_harness_manage_webhook_failure_total").increment(1);
-            tracing::warn!(task_id = %task.task_id, error = %err, "webhook call error");
-        }
+    metrics::counter!("open_harness_manage_webhook_failure_total").increment(1);
+}
+
+async fn update_task_status(
+    st: &AppState,
+    task_id: &str,
+    status: TaskStatus,
+    output: Option<String>,
+    error: Option<String>,
+    metric: Option<&'static str>,
+) -> Option<TaskRecord> {
+    let task = bump_task(st, task_id, status, output, error)?;
+    if let Some(name) = metric {
+        metrics::counter!(name).increment(1);
     }
+    persist_task_record(st, &task).await;
+    post_webhook(st, &task).await;
+    Some(task)
+}
+
+fn conflict_response(task_id: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::CONFLICT, Json(json!({"error":"task_id_conflict","task_id": task_id})))
 }
 
 pub(crate) async fn dispatch_task(
@@ -119,19 +199,8 @@ pub(crate) async fn dispatch_task(
     metrics::counter!("open_harness_manage_requests_total").increment(1);
     metrics::counter!("open_harness_manage_task_created_total").increment(1);
     let task_id = body.client_task_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
-    if let Some(existing) = st.tasks.get(&task_id) {
-        if existing.client_task_id.is_some()
-            && existing.tenant_id == auth_ctx.tenant_id
-            && existing.user_id == auth_ctx.user_id
-        {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({"error":"task_id_conflict","task_id": task_id})),
-            );
-        }
-    }
     let now = now_ts();
-    let task = TaskRecord {
+    let new_task = TaskRecord {
         task_id: task_id.clone(),
         thread_id: thread_id.clone(),
         status: TaskStatus::Queued,
@@ -146,7 +215,21 @@ pub(crate) async fn dispatch_task(
         tenant_id: auth_ctx.tenant_id.clone(),
         user_id: auth_ctx.user_id.clone(),
     };
-    st.tasks.insert(task_id.clone(), task.clone());
+
+    let task = match st.tasks.entry(task_id.clone()) {
+        Entry::Occupied(existing) => {
+            if can_access_task(existing.get(), &auth_ctx) {
+                return conflict_response(&task_id);
+            }
+            metrics::counter!("open_harness_manage_task_forbidden_total").increment(1);
+            return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"})));
+        }
+        Entry::Vacant(slot) => {
+            let inserted = slot.insert(new_task);
+            inserted.clone()
+        }
+    };
+    persist_task_record(&st, &task).await;
     prune_tasks(&st.tasks, st.task_capacity);
     let st_clone = st.clone();
     let spawned_task_id = task_id.clone();
@@ -227,140 +310,177 @@ async fn run_task_worker(
     thread_id: String,
     body: TaskDispatchRequest,
 ) {
-    let Some(task) = bump_task(&st, &task_id, TaskStatus::Running, None, None) else {
+    if update_task_status(&st, &task_id, TaskStatus::Running, None, None, None).await.is_none() {
+        tracing::warn!(task_id = %task_id, "task missing before worker start");
         return;
-    };
-    post_webhook(&st, &task).await;
+    }
+    let (run_url, run_req) = build_run_request(&st, &thread_id, &body).await;
+    if body.stream {
+        run_streaming_task(&st, &task_id, run_url, run_req).await;
+        return;
+    }
+    run_single_response_task(&st, &task_id, run_url, run_req).await;
+}
+
+async fn build_run_request(
+    st: &AppState,
+    thread_id: &str,
+    body: &TaskDispatchRequest,
+) -> (String, serde_json::Value) {
     let langgraph_url = st.langgraph_url.read().await.clone();
-    let run_url = if body.stream {
-        format!("{}/threads/{thread_id}/runs/stream", langgraph_url.trim_end_matches('/'))
-    } else {
-        format!("{}/threads/{thread_id}/runs", langgraph_url.trim_end_matches('/'))
-    };
+    let run_url = format!(
+        "{}/threads/{thread_id}/runs{}",
+        langgraph_url.trim_end_matches('/'),
+        if body.stream { "/stream" } else { "" }
+    );
     let run_req = json!({
         "input": body.input,
         "config": {
-            "configurable": body.configurable.unwrap_or_else(|| json!({}))
+            "configurable": body.configurable.clone().unwrap_or_else(|| json!({}))
         },
         "stream_mode": ["values", "messages-tuple", "end", "error"]
     });
-    if body.stream {
-        match st.http_client.post(run_url).json(&run_req).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let mut stream = resp.bytes_stream();
-                let mut total = 0_usize;
-                while let Some(next) = futures::StreamExt::next(&mut stream).await {
-                    match next {
-                        Ok(chunk) => {
-                            if total >= MAX_STREAM_CHUNKS {
-                                let failed = bump_task(
-                                    &st,
-                                    &task_id,
-                                    TaskStatus::Failed,
-                                    None,
-                                    Some(format!(
-                                        "stream output exceeded chunk limit {}",
-                                        MAX_STREAM_CHUNKS
-                                    )),
-                                );
-                                if let Some(task) = failed {
-                                    metrics::counter!("open_harness_manage_task_failed_total")
-                                        .increment(1);
-                                    post_webhook(&st, &task).await;
-                                }
-                                return;
-                            }
-                            let payload = String::from_utf8_lossy(&chunk).to_string();
-                            let _ =
-                                bump_task(&st, &task_id, TaskStatus::Running, Some(payload), None);
-                            total += 1;
-                        }
-                        Err(err) => {
-                            let failed = bump_task(
-                                &st,
-                                &task_id,
-                                TaskStatus::Failed,
-                                None,
-                                Some(format!("stream read failed: {err}")),
-                            );
-                            if let Some(task) = failed {
-                                metrics::counter!("open_harness_manage_task_failed_total")
-                                    .increment(1);
-                                post_webhook(&st, &task).await;
-                            }
-                            return;
-                        }
-                    }
-                }
-                if let Some(done) = bump_task(&st, &task_id, TaskStatus::Completed, None, None) {
-                    metrics::counter!("open_harness_manage_task_completed_total").increment(1);
-                    post_webhook(&st, &done).await;
-                }
-            }
-            Ok(resp) => {
-                let failed = bump_task(
-                    &st,
-                    &task_id,
-                    TaskStatus::Failed,
-                    None,
-                    Some(format!("upstream status {}", resp.status())),
-                );
-                if let Some(task) = failed {
-                    metrics::counter!("open_harness_manage_task_failed_total").increment(1);
-                    post_webhook(&st, &task).await;
-                }
-            }
-            Err(err) => {
-                let failed = bump_task(
-                    &st,
-                    &task_id,
-                    TaskStatus::Failed,
-                    None,
-                    Some(format!("upstream error {err}")),
-                );
-                if let Some(task) = failed {
-                    metrics::counter!("open_harness_manage_task_failed_total").increment(1);
-                    post_webhook(&st, &task).await;
-                }
-            }
-        }
-        return;
-    }
+    (run_url, run_req)
+}
 
+async fn run_streaming_task(
+    st: &AppState,
+    task_id: &str,
+    run_url: String,
+    run_req: serde_json::Value,
+) {
     match st.http_client.post(run_url).json(&run_req).send().await {
         Ok(resp) if resp.status().is_success() => {
-            let output = resp.text().await.unwrap_or_default();
-            if let Some(done) = bump_task(&st, &task_id, TaskStatus::Completed, Some(output), None)
-            {
-                metrics::counter!("open_harness_manage_task_completed_total").increment(1);
-                post_webhook(&st, &done).await;
+            let mut stream = resp.bytes_stream();
+            let mut total = 0_usize;
+            while let Some(next) = futures::StreamExt::next(&mut stream).await {
+                match next {
+                    Ok(chunk) => {
+                        if total >= MAX_STREAM_CHUNKS {
+                            let _ = update_task_status(
+                                st,
+                                task_id,
+                                TaskStatus::Failed,
+                                None,
+                                Some(format!(
+                                    "stream output exceeded chunk limit {}",
+                                    MAX_STREAM_CHUNKS
+                                )),
+                                Some("open_harness_manage_task_failed_total"),
+                            )
+                            .await;
+                            return;
+                        }
+                        let payload = String::from_utf8_lossy(&chunk).to_string();
+                        if let Some(updated) =
+                            bump_task(st, task_id, TaskStatus::Running, Some(payload), None)
+                        {
+                            persist_task_record(st, &updated).await;
+                        }
+                        total += 1;
+                    }
+                    Err(err) => {
+                        let _ = update_task_status(
+                            st,
+                            task_id,
+                            TaskStatus::Failed,
+                            None,
+                            Some(format!("stream read failed: {err}")),
+                            Some("open_harness_manage_task_failed_total"),
+                        )
+                        .await;
+                        return;
+                    }
+                }
             }
+            let _ = update_task_status(
+                st,
+                task_id,
+                TaskStatus::Completed,
+                None,
+                None,
+                Some("open_harness_manage_task_completed_total"),
+            )
+            .await;
         }
         Ok(resp) => {
-            let failed = bump_task(
-                &st,
-                &task_id,
+            let _ = update_task_status(
+                st,
+                task_id,
                 TaskStatus::Failed,
                 None,
                 Some(format!("upstream status {}", resp.status())),
-            );
-            if let Some(task) = failed {
-                metrics::counter!("open_harness_manage_task_failed_total").increment(1);
-                post_webhook(&st, &task).await;
-            }
+                Some("open_harness_manage_task_failed_total"),
+            )
+            .await;
         }
         Err(err) => {
-            let failed = bump_task(
-                &st,
-                &task_id,
+            let _ = update_task_status(
+                st,
+                task_id,
                 TaskStatus::Failed,
                 None,
                 Some(format!("upstream error {err}")),
-            );
-            if let Some(task) = failed {
-                metrics::counter!("open_harness_manage_task_failed_total").increment(1);
-                post_webhook(&st, &task).await;
-            }
+                Some("open_harness_manage_task_failed_total"),
+            )
+            .await;
         }
+    }
+}
+
+async fn run_single_response_task(
+    st: &AppState,
+    task_id: &str,
+    run_url: String,
+    run_req: serde_json::Value,
+) {
+    match st.http_client.post(run_url).json(&run_req).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let output = resp.text().await.unwrap_or_default();
+            let _ = update_task_status(
+                st,
+                task_id,
+                TaskStatus::Completed,
+                Some(output),
+                None,
+                Some("open_harness_manage_task_completed_total"),
+            )
+            .await;
+        }
+        Ok(resp) => {
+            let _ = update_task_status(
+                st,
+                task_id,
+                TaskStatus::Failed,
+                None,
+                Some(format!("upstream status {}", resp.status())),
+                Some("open_harness_manage_task_failed_total"),
+            )
+            .await;
+        }
+        Err(err) => {
+            let _ = update_task_status(
+                st,
+                task_id,
+                TaskStatus::Failed,
+                None,
+                Some(format!("upstream error {err}")),
+                Some("open_harness_manage_task_failed_total"),
+            )
+            .await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_status_name_maps_as_expected() {
+        assert_eq!(task_status_name(&TaskStatus::Queued), "queued");
+        assert_eq!(task_status_name(&TaskStatus::Running), "running");
+        assert_eq!(task_status_name(&TaskStatus::Completed), "completed");
+        assert_eq!(task_status_name(&TaskStatus::Failed), "failed");
     }
 }
