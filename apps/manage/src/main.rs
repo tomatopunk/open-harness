@@ -15,7 +15,7 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use state_abstraction::{
-    LocalFsStateStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
+    LocalFsStateStore, ManageTaskStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
@@ -41,6 +41,7 @@ struct AppState {
     local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
     storage: Arc<LocalFsStateStore>,
+    manage_tasks: Arc<dyn ManageTaskStore>,
     tasks: Arc<dashmap::DashMap<String, TaskRecord>>,
     task_capacity: usize,
     langgraph_url: Arc<RwLock<String>>,
@@ -134,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         threads_root: threads_root.clone(),
         local_fs_root: local_fs_root.clone(),
         storage: storage.clone(),
+        manage_tasks: storage.clone(),
         tasks: Arc::new(dashmap::DashMap::new()),
         task_capacity: 1000,
         langgraph_url,
@@ -287,14 +289,9 @@ async fn storage_switch(
     Json(body): Json<StorageSwitch>,
 ) -> impl IntoResponse {
     let backend = StorageBackendKind::from_mode(&body.backend);
-    let applied = matches!(
-        backend,
-        StorageBackendKind::LocalFs
-            | StorageBackendKind::Sqlite
-            | StorageBackendKind::Postgres
-            | StorageBackendKind::Redis
-            | StorageBackendKind::S3
-    );
+    // Current manage runtime wires LocalFs stores at boot time; runtime backend hot-switch
+    // is declarative only until concrete backend registries are injected.
+    let applied = matches!(backend, StorageBackendKind::LocalFs);
     if applied {
         let mut s = st.store.write().await;
         s.storage_mode = body.backend.clone();
