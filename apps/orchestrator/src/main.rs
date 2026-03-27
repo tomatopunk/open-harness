@@ -4,9 +4,19 @@ use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
 use serde::Deserialize;
 use serde_json::json;
-use state_abstraction::LocalFsLayout;
+use state_abstraction::{
+    LocalFsLayout, LocalFsStateStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
+    SkillRecord, SkillStore, SubagentTask, SubagentTaskStore, ToolRecord, ToolRecordStore,
+};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct AppState {
+    store: Arc<LocalFsStateStore>,
+}
 
 async fn pipeline_check() -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
@@ -26,31 +36,92 @@ struct OrchestrateRequest {
     messages: Vec<serde_json::Value>,
 }
 
-async fn run_orchestrate(Json(body): Json<OrchestrateRequest>) -> Json<serde_json::Value> {
+async fn run_orchestrate_with_state(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    Json(body): Json<OrchestrateRequest>,
+) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
     let ctx = pipeline
         .prepare_with_input(body.configurable.clone(), body.messages.clone())
         .unwrap_or_else(|_| pipeline.prepare(body.configurable.clone()).expect("pipeline"));
 
-    let subagent_enabled = body.configurable.subagent_enabled.unwrap_or(false);
-    let max_subagents = body.configurable.max_concurrent_subagents.unwrap_or(1);
-    let delegated = if subagent_enabled {
-        vec![json!({
-            "agent": "general",
-            "status": "completed",
-            "max_concurrent_subagents": max_subagents
-        })]
-    } else {
-        Vec::new()
-    };
+    let thread_id = body
+        .configurable
+        .thread_id
+        .as_deref()
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .unwrap_or_else(Uuid::new_v4);
+
+    for fact in &ctx.memory_facts {
+        let _ = st.store.append_fact(thread_id, fact).await;
+    }
+
+    let _ = st
+        .store
+        .put_skill(&SkillRecord {
+            name: "research".to_string(),
+            enabled: body.configurable.skills_enabled.unwrap_or(true),
+        })
+        .await;
+
+    let _ = st
+        .store
+        .append_tool_record(&ToolRecord {
+            thread_id,
+            tool_name: "orchestrate.prepare".to_string(),
+            args: json!({"messages_count": body.messages.len()}),
+            result: json!({"loop_detected": ctx.loop_detected, "todos": ctx.todos}),
+            created_at: chrono::Utc::now(),
+        })
+        .await;
+
+    if body.configurable.sandbox_enabled.unwrap_or(false) {
+        let _ = st
+            .store
+            .append_execution(&SandboxExecution {
+                execution_id: Uuid::new_v4(),
+                thread_id,
+                command: "prepare_runtime".to_string(),
+                exit_code: 0,
+                stdout: "sandbox simulated".to_string(),
+                stderr: String::new(),
+                created_at: chrono::Utc::now(),
+            })
+            .await;
+    }
+
+    if body.configurable.subagent_enabled.unwrap_or(false) {
+        let max_subagents = body.configurable.max_concurrent_subagents.unwrap_or(1);
+        let task = SubagentTask {
+            task_id: Uuid::new_v4(),
+            thread_id,
+            agent_name: "general".to_string(),
+            status: "completed".to_string(),
+            input: json!({"max_concurrent_subagents": max_subagents}),
+            output: Some(json!({"result":"ok"})),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let _ = st.store.upsert_task(&task).await;
+    }
+
+    let facts = st.store.list_facts(thread_id).await.unwrap_or_default();
+    let tool_records = st.store.list_tool_records(thread_id).await.unwrap_or_default();
+    let subagent_records = st.store.list_tasks_by_thread(thread_id).await.unwrap_or_default();
+    let sandbox_records = st.store.list_executions(thread_id).await.unwrap_or_default();
+    let skills = st.store.list_skills().await.unwrap_or_default();
 
     Json(json!({
         "ok": true,
+        "thread_id": thread_id,
         "loop_detected": ctx.loop_detected,
         "token_usage_estimate": ctx.token_usage_estimate,
         "todos": ctx.todos,
-        "memory_facts": ctx.memory_facts,
-        "delegated_subagents": delegated
+        "memory_facts": facts,
+        "skills": skills,
+        "tool_records_count": tool_records.len(),
+        "subagent_tasks_count": subagent_records.len(),
+        "sandbox_executions_count": sandbox_records.len()
     }))
 }
 
@@ -67,12 +138,15 @@ async fn main() -> anyhow::Result<()> {
         let layout = LocalFsLayout::new(&cfg.storage.local_fs_root);
         let _ = layout.ensure_base_dirs();
     }
+    let store = Arc::new(LocalFsStateStore::new(&cfg.storage.local_fs_root));
+    let app_state = AppState { store };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/internal/pipeline-check", post(pipeline_check))
-        .route("/internal/orchestrate", post(run_orchestrate))
+        .route("/internal/orchestrate", post(run_orchestrate_with_state))
         .layer(TraceLayer::new_for_http());
+    let app = app.with_state(app_state);
 
     let addr: SocketAddr = "0.0.0.0:8083".parse()?;
     tracing::info!("open-harness-orchestrator on {addr}");

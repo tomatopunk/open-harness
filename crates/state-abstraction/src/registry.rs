@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::traits::{ArtifactStore, CheckpointStore, MemoryStore, ThreadMetaStore};
+use crate::traits::{
+    ArtifactStore, CheckpointStore, MemoryStore, SandboxExecutionStore, SkillStore,
+    SubagentTaskStore, ThreadMetaStore, ToolRecordStore,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageBackendKind {
@@ -30,6 +33,10 @@ pub struct StorageRegistry {
     pub checkpoints: Arc<dyn CheckpointStore>,
     pub artifacts: Arc<dyn ArtifactStore>,
     pub memory: Arc<dyn MemoryStore>,
+    pub skills: Arc<dyn SkillStore>,
+    pub tools: Arc<dyn ToolRecordStore>,
+    pub subagents: Arc<dyn SubagentTaskStore>,
+    pub sandbox: Arc<dyn SandboxExecutionStore>,
 }
 
 impl StorageRegistry {
@@ -38,7 +45,11 @@ impl StorageRegistry {
         checkpoints: Arc<dyn CheckpointStore>,
         artifacts: Arc<dyn ArtifactStore>,
         memory: Arc<dyn MemoryStore>,
+        skills: Arc<dyn SkillStore>,
+        tools: Arc<dyn ToolRecordStore>,
+        subagents: Arc<dyn SubagentTaskStore>,
+        sandbox: Arc<dyn SandboxExecutionStore>,
     ) -> Self {
-        Self { threads, checkpoints, artifacts, memory }
+        Self { threads, checkpoints, artifacts, memory, skills, tools, subagents, sandbox }
     }
 }

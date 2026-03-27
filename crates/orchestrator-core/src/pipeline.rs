@@ -1,9 +1,10 @@
 use crate::middleware::{
-    MemoryMiddleware, Middleware, MiddlewareContext, SummarizationMiddleware, TodoMiddleware,
+    MemoryMiddleware, Middleware, MiddlewareContext, SandboxMiddleware, SkillMiddleware,
+    SubagentMiddleware, SummarizationMiddleware, TodoMiddleware, ToolMiddleware,
 };
 use protocol_compat::Configurable;
 
-/// Single-step pipeline applying middleware order (summarization → memory → todo).
+/// Single-step pipeline applying middleware order close to deer-flow runtime.
 pub struct LeadPipeline {
     chain: Vec<Box<dyn Middleware>>,
 }
@@ -14,6 +15,10 @@ impl Default for LeadPipeline {
             chain: vec![
                 Box::new(SummarizationMiddleware),
                 Box::new(MemoryMiddleware),
+                Box::new(SkillMiddleware),
+                Box::new(ToolMiddleware),
+                Box::new(SandboxMiddleware),
+                Box::new(SubagentMiddleware),
                 Box::new(TodoMiddleware),
             ],
         }
@@ -27,6 +32,10 @@ impl LeadPipeline {
             messages: vec![],
             memory_facts: vec![],
             todos: vec![],
+            tool_calls: vec![],
+            skill_hints: vec![],
+            sandbox_commands: vec![],
+            subagent_requests: vec![],
             token_usage_estimate: 0,
             loop_detected: false,
         };
@@ -44,6 +53,10 @@ impl LeadPipeline {
             messages,
             memory_facts: vec![],
             todos: vec![],
+            tool_calls: vec![],
+            skill_hints: vec![],
+            sandbox_commands: vec![],
+            subagent_requests: vec![],
             token_usage_estimate: 0,
             loop_detected: false,
         };

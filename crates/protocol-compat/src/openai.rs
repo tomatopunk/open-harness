@@ -12,6 +12,12 @@ pub struct OpenAiChatCompletionsRequest {
     pub stream: Option<bool>,
     #[serde(default)]
     pub user: Option<String>,
+    #[serde(default)]
+    pub tools: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    pub tool_choice: Option<serde_json::Value>,
+    #[serde(default)]
+    pub response_format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

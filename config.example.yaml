@@ -1,6 +1,11 @@
 storage:
   mode: local_fs
   local_fs_root: .deer-flow/local-fs
+  sqlite_url: null
+  postgres_url: null
+  redis_url: redis://127.0.0.1:6379
+  s3_bucket: null
+  s3_prefix: open-harness
 
 models:
   - name: gpt-4

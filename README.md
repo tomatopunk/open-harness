@@ -2,6 +2,8 @@
 
 Rust implementation of the **open-harness** control/data plane aligned with [deer-flow](https://github.com/bytedance/deer-flow): LangGraph-compatible gateway, manage API, orchestrator, IM channels, and pluggable storage.
 
+The runtime follows a storage-first design: `memory`, `skills`, `tool records`, `sandbox execution logs`, and `sub-agent tasks` are persisted through a unified storage abstraction.
+
 ## Layout
 
 - `apps/`: runtime services (`gateway`, `manage`, `channel`, `orchestrator`)
@@ -34,6 +36,16 @@ Storage modes:
 - `redis`
 - `s3`
 
+Storage-related keys in `storage`:
+
+- `mode`: `local_fs|sqlite|postgres|redis|s3`
+- `local_fs_root`
+- `sqlite_url`
+- `postgres_url`
+- `redis_url`
+- `s3_bucket`
+- `s3_prefix`
+
 Env overrides (nested with `__`):
 
 - `OPEN_HARNESS_GATEWAY__BIND` — default `0.0.0.0:8080`
@@ -51,6 +63,7 @@ Env overrides (nested with `__`):
   - `GET /v1/models`
   - `POST /v1/chat/completions` (supports `stream=true|false`)
 - DeerFlow-like manage APIs are exposed under `/api/*` from `open-harness-manage`.
+- Orchestrator persists runtime traces for memory/skills/tools/sandbox/sub-agents under storage-backed paths.
 
 ## Smoke (curl)
 

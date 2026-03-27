@@ -8,11 +8,13 @@
 - 配置优先级：`config.yaml` -> `OPEN_HARNESS_*` 环境变量覆盖。
 - 存储模式：`storage.mode` 支持 `local_fs|sqlite|postgres|redis|s3`。
 - 开发默认：`local_fs`，目录根由 `storage.local_fs_root` 指定。
+- 存储连接键：`storage.sqlite_url`、`storage.postgres_url`、`storage.redis_url`、`storage.s3_bucket`、`storage.s3_prefix`。
 - `local_fs` 目录约定：
   - `config/`：MCP、skills 等配置快照
   - `tasks/`：任务建议与任务态文件
   - `threads/`：线程与上传/产物数据
   - `memory/`：长期记忆快照
+  - `state/`：thread_meta 与 checkpoint 快照
 
 ## OpenAI 兼容
 
@@ -20,7 +22,7 @@
   - 返回 OpenAI `list` 结构，`data[].id` 可被 Cursor/OpenCode 直接选择。
   - 模型列表来自 `config.yaml` 的 `models[]`。
 - `POST /v1/chat/completions`
-  - 入参最小子集：`model/messages/temperature/max_tokens/stream/user`
+  - 入参子集：`model/messages/temperature/max_tokens/stream/user/tools/tool_choice/response_format`
   - 行为：
     - `stream=false`：返回 `chat.completion`
     - `stream=true`：返回 SSE `chat.completion.chunk` + `[DONE]`

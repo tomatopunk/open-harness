@@ -131,11 +131,15 @@ async fn openai_chat_completions(
         },
         "config": {
             "configurable": {
+                "thread_id": thread_id,
                 "model_name": body.model,
-                "api_key": model_api_key(&st.models, &body.model)
+                "api_key": model_api_key(&st.models, &body.model),
+                "thinking_enabled": false,
+                "is_plan_mode": false,
+                "subagent_enabled": false
             }
         },
-        "stream_mode": ["values", "messages-tuple", "end"]
+        "stream_mode": ["values", "messages-tuple", "end", "error"]
     });
 
     let url = format!(
@@ -163,33 +167,73 @@ async fn openai_chat_completions(
 
     if stream {
         let stream = upstream.bytes_stream();
+        let init_chunk = format!(
+            "data: {}\n\n",
+            json!({
+                "id": request_id.clone(),
+                "object": "chat.completion.chunk",
+                "choices": [{ "index": 0, "delta": { "role": "assistant" }, "finish_reason": serde_json::Value::Null }]
+            })
+        );
         let body_stream = futures::stream::unfold(
-            (stream, request_id.clone()),
-            |(mut s, req_id)| async move {
+            (
+                stream,
+                request_id.clone(),
+                false,
+                vec![Ok::<_, std::convert::Infallible>(bytes::Bytes::from(init_chunk))],
+            ),
+            |(mut s, req_id, done_sent, mut pending)| async move {
+                if let Some(item) = pending.pop() {
+                    return Some((item, (s, req_id, done_sent, pending)));
+                }
                 match futures::StreamExt::next(&mut s).await {
                     Some(Ok(chunk)) => {
                         let payload = String::from_utf8_lossy(&chunk);
-                        let content = extract_assistant_text(&payload);
-                        let sse_chunk = if let Some(text) = content {
-                            let chunk_id = req_id.clone();
-                            format!(
+                        let mut out = Vec::new();
+                        for text in extract_assistant_texts(&payload) {
+                            out.push(Ok::<_, std::convert::Infallible>(bytes::Bytes::from(format!(
                                 "data: {}\n\n",
                                 json!({
-                                    "id": chunk_id,
+                                    "id": req_id,
                                     "object": "chat.completion.chunk",
                                     "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": serde_json::Value::Null }]
                                 })
-                            )
-                        } else {
-                            "data: [DONE]\n\n".to_string()
-                        };
-                        Some((
-                            Ok::<_, std::convert::Infallible>(bytes::Bytes::from(sse_chunk)),
-                            (s, req_id),
-                        ))
+                            ))));
+                        }
+                        if out.is_empty() {
+                            return Some((
+                                Ok(bytes::Bytes::from_static(b"")),
+                                (s, req_id, done_sent, out),
+                            ));
+                        }
+                        out.reverse();
+                        let next = out.pop().expect("non-empty");
+                        Some((next, (s, req_id, done_sent, out)))
                     }
-                    Some(Err(_)) => None,
-                    None => None,
+                    Some(Err(_)) => {
+                        if done_sent {
+                            None
+                        } else {
+                            Some((
+                                Ok(bytes::Bytes::from(
+                                    "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                                )),
+                                (s, req_id, true, vec![]),
+                            ))
+                        }
+                    }
+                    None => {
+                        if done_sent {
+                            None
+                        } else {
+                            Some((
+                                Ok(bytes::Bytes::from(
+                                    "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                                )),
+                                (s, req_id, true, vec![]),
+                            ))
+                        }
+                    }
                 }
             },
         );
@@ -225,6 +269,11 @@ fn model_api_key(models: &[ModelConfig], model_name: &str) -> Option<String> {
 }
 
 fn extract_assistant_text(payload: &str) -> Option<String> {
+    extract_assistant_texts(payload).into_iter().next()
+}
+
+fn extract_assistant_texts(payload: &str) -> Vec<String> {
+    let mut out = Vec::new();
     for line in payload.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("data:") {
@@ -238,14 +287,15 @@ fn extract_assistant_text(payload: &str) -> Option<String> {
             if let Some(content) =
                 v.get("data").and_then(|d| d.get("content")).and_then(|c| c.as_str())
             {
-                return Some(content.to_string());
+                out.push(content.to_string());
+                continue;
             }
             if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
-                return Some(content.to_string());
+                out.push(content.to_string());
             }
         }
     }
-    None
+    out
 }
 
 async fn ensure_thread(st: &AppState, thread_id: &str) -> Result<(), String> {

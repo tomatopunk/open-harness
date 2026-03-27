@@ -2031,6 +2031,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "config-runtime",
  "orchestrator-core",
  "protocol-compat",
@@ -2041,6 +2042,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

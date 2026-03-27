@@ -8,6 +8,10 @@ pub struct MiddlewareContext {
     pub messages: Vec<Value>,
     pub memory_facts: Vec<String>,
     pub todos: Vec<String>,
+    pub tool_calls: Vec<String>,
+    pub skill_hints: Vec<String>,
+    pub sandbox_commands: Vec<String>,
+    pub subagent_requests: Vec<String>,
     pub token_usage_estimate: usize,
     pub loop_detected: bool,
 }
@@ -65,6 +69,71 @@ impl Middleware for TodoMiddleware {
         let token_count = ctx.messages.iter().filter_map(|m| m.as_str()).map(str::len).sum();
         ctx.token_usage_estimate = token_count;
         ctx.loop_detected = ctx.messages.windows(2).any(|w| w.first() == w.get(1));
+        Ok(())
+    }
+}
+
+pub struct SkillMiddleware;
+impl Middleware for SkillMiddleware {
+    fn name(&self) -> &'static str {
+        "skills"
+    }
+
+    fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), String> {
+        if ctx.configurable.skills_enabled.unwrap_or(true) {
+            ctx.skill_hints.push("research".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub struct ToolMiddleware;
+impl Middleware for ToolMiddleware {
+    fn name(&self) -> &'static str {
+        "tools"
+    }
+
+    fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), String> {
+        let mut detected = Vec::new();
+        for msg in &ctx.messages {
+            if let Some(s) = msg.as_str() {
+                if s.contains("search") {
+                    detected.push("web_search");
+                }
+                if s.contains("code") {
+                    detected.push("read_file");
+                }
+            }
+        }
+        ctx.tool_calls.extend(detected.into_iter().map(str::to_string));
+        Ok(())
+    }
+}
+
+pub struct SandboxMiddleware;
+impl Middleware for SandboxMiddleware {
+    fn name(&self) -> &'static str {
+        "sandbox"
+    }
+
+    fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), String> {
+        if ctx.configurable.sandbox_enabled.unwrap_or(false) {
+            ctx.sandbox_commands.push("prepare_runtime".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub struct SubagentMiddleware;
+impl Middleware for SubagentMiddleware {
+    fn name(&self) -> &'static str {
+        "subagent"
+    }
+
+    fn before_turn(&self, ctx: &mut MiddlewareContext) -> Result<(), String> {
+        if ctx.configurable.subagent_enabled.unwrap_or(false) {
+            ctx.subagent_requests.push("general".to_string());
+        }
         Ok(())
     }
 }
