@@ -55,4 +55,4 @@ channels:
     - wecom
 
 runtime:
-  engine: langgraph-compatible
+  engine: llm-chain

@@ -13,7 +13,7 @@ Status:
 | Runtime | Thread state reducer contract | yes | partial | partial | `crates/orchestrator-core/src/pipeline.rs` |
 | Runtime | Subagent execution pool/timeout | yes | partial | partial | `crates/orchestrator-core/src` |
 | Runtime | LLM-Chain execution line | yes (langchain) | partial | partial | `crates/runtime-llm-chain-adapter` |
-| Runtime | LangGraph adapter isolation | yes | partial | partial | `crates/runtime-langgraph-adapter` |
+| Runtime | LLM-Chain adapter runtime | yes (langchain) | partial | partial | `crates/runtime-llm-chain-adapter` |
 | Tooling | MCP transport/cache/auth | yes | partial | partial | `apps/manage/src/main.rs` |
 | Tooling | Skills scan/install/enable/use | yes | partial | partial | `apps/manage/src/main.rs` |
 | Sandbox | Provider abstraction | yes | partial | partial | `crates/sandbox-runtime/src/traits.rs` |

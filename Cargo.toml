@@ -5,7 +5,6 @@ members = [
     "crates/config-runtime",
     "crates/state-abstraction",
     "crates/runtime-kernel",
-    "crates/runtime-langgraph-adapter",
     "crates/runtime-llm-chain-adapter",
     "crates/storage-sqlite",
     "crates/storage-postgres",

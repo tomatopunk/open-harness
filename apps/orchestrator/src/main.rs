@@ -3,7 +3,6 @@ use config_runtime::load_or_default;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
 use runtime_kernel::RuntimeEvent;
-use runtime_langgraph_adapter::LanggraphAdapter;
 use runtime_llm_chain_adapter::LlmChainAdapter;
 use serde::Deserialize;
 use serde_json::json;
@@ -19,45 +18,19 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     store: Arc<LocalFsStateStore>,
-    runtime_engine: RuntimeEngine,
-}
-
-#[derive(Clone, Copy)]
-enum RuntimeEngine {
-    LanggraphCompatible,
-    LlmChain,
-}
-
-impl RuntimeEngine {
-    fn from_str(value: &str) -> Self {
-        match value {
-            "llm-chain" => Self::LlmChain,
-            _ => Self::LanggraphCompatible,
-        }
-    }
+    runtime_engine: String,
 }
 
 async fn run_runtime(
-    engine: RuntimeEngine,
+    _engine: &str,
     configurable: Configurable,
     messages: Vec<serde_json::Value>,
 ) -> Vec<RuntimeEvent> {
-    match engine {
-        RuntimeEngine::LanggraphCompatible => {
-            let adapter = LanggraphAdapter::default();
-            adapter
-                .run(configurable, messages)
-                .await
-                .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
-        }
-        RuntimeEngine::LlmChain => {
-            let adapter = LlmChainAdapter::default();
-            adapter
-                .run(configurable, messages)
-                .await
-                .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
-        }
-    }
+    let adapter = LlmChainAdapter::default();
+    adapter
+        .run(configurable, messages)
+        .await
+        .unwrap_or_else(|e| vec![RuntimeEvent::Error { message: e.to_string() }])
 }
 
 async fn pipeline_check(
@@ -65,15 +38,12 @@ async fn pipeline_check(
 ) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
     let ctx = pipeline.prepare(Configurable::default()).await.expect("pipeline");
-    let events = run_runtime(st.runtime_engine, Configurable::default(), vec![]).await;
+    let events = run_runtime(&st.runtime_engine, Configurable::default(), vec![]).await;
     Json(json!({
         "middleware": "ok",
         "configurable": ctx.configurable,
         "token_usage_estimate": ctx.token_usage_estimate,
-        "runtime_engine": match st.runtime_engine {
-            RuntimeEngine::LanggraphCompatible => "langgraph-compatible",
-            RuntimeEngine::LlmChain => "llm-chain"
-        },
+        "runtime_engine": st.runtime_engine,
         "events_count": events.len()
     }))
 }
@@ -163,7 +133,7 @@ async fn run_orchestrate_with_state(
     let sandbox_records = st.store.list_executions(thread_id).await.unwrap_or_default();
     let skills = st.store.list_skills().await.unwrap_or_default();
     let events =
-        run_runtime(st.runtime_engine, body.configurable.clone(), body.messages.clone()).await;
+        run_runtime(&st.runtime_engine, body.configurable.clone(), body.messages.clone()).await;
 
     Json(json!({
         "ok": true,
@@ -194,8 +164,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = layout.ensure_base_dirs();
     }
     let store = Arc::new(LocalFsStateStore::new(&cfg.storage.local_fs_root));
-    let app_state =
-        AppState { store, runtime_engine: RuntimeEngine::from_str(&cfg.runtime.engine) };
+    let app_state = AppState { store, runtime_engine: cfg.runtime.engine.clone() };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))

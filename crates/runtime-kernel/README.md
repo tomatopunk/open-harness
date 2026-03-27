@@ -1,7 +1,6 @@
 # runtime-kernel
 
 Shared runtime kernel used by:
-- `runtime-langgraph-adapter`
 - `runtime-llm-chain-adapter`
 
 ## Scope

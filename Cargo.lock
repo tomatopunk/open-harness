@@ -2124,7 +2124,6 @@ dependencies = [
  "orchestrator-core",
  "protocol-compat",
  "runtime-kernel",
- "runtime-langgraph-adapter",
  "runtime-llm-chain-adapter",
  "serde",
  "serde_json",
@@ -2878,18 +2877,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "runtime-langgraph-adapter"
-version = "0.1.0"
-dependencies = [
- "protocol-compat",
- "runtime-kernel",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]

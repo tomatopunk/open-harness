@@ -206,7 +206,7 @@ fn default_channels() -> ChannelsConfig {
 }
 
 fn default_runtime_engine() -> String {
-    "langgraph-compatible".to_string()
+    "llm-chain".to_string()
 }
 
 fn default_runtime() -> RuntimeConfig {
@@ -300,7 +300,7 @@ channels:
     - wecom
 
 runtime:
-  engine: langgraph-compatible
+  engine: llm-chain
 "#;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);

@@ -28,5 +28,4 @@ state-abstraction = { path = "../../crates/state-abstraction" }
 orchestrator-core = { path = "../../crates/orchestrator-core" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 runtime-kernel = { path = "../../crates/runtime-kernel" }
-runtime-langgraph-adapter = { path = "../../crates/runtime-langgraph-adapter" }
 runtime-llm-chain-adapter = { path = "../../crates/runtime-llm-chain-adapter" }
