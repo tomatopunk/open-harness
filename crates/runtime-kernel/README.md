@@ -6,8 +6,9 @@ Shared runtime kernel used by:
 ## Scope
 
 - `Thread`-level middleware context
+- middleware chain with loop detection, guardrails, and tool error handling
 - runtime events and tool invocation schema
-- subagent executor with concurrency and timeout guardrails
+- subagent executor with concurrency, timeout, and cancellation
 - reusable kernel pipeline for adapter implementations
 
 ## Example

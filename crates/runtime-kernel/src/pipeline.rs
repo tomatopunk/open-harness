@@ -36,6 +36,15 @@ impl Default for RuntimeKernel {
 }
 
 impl RuntimeKernel {
+    pub async fn run(
+        &self,
+        configurable: Configurable,
+        messages: Vec<Value>,
+    ) -> Result<Vec<RuntimeEvent>, RuntimeError> {
+        let ctx = self.prepare_with_input(configurable, messages).await?;
+        Ok(self.render_events(&ctx))
+    }
+
     pub async fn prepare_with_input(
         &self,
         configurable: Configurable,
@@ -70,6 +79,12 @@ impl RuntimeKernel {
         for tool in &ctx.tool_calls {
             out.push(RuntimeEvent::ToolCall { invocation: tool.clone() });
         }
+        if let Some(last) = ctx.messages.last().and_then(Value::as_str) {
+            out.push(RuntimeEvent::Message {
+                role: "assistant".to_string(),
+                content: format!("processed: {}", last.chars().take(240).collect::<String>()),
+            });
+        }
         out.push(RuntimeEvent::Value {
             payload: serde_json::json!({
                 "loop_detected": ctx.loop_detected,
@@ -103,6 +118,7 @@ mod tests {
         assert!(ctx.blocked_tools.iter().any(|name| name == "web_search"));
         let events = kernel.render_events(&ctx);
         assert!(!events.is_empty());
+        assert!(events.iter().any(|event| matches!(event, RuntimeEvent::Message { .. })));
     }
 
     #[tokio::test]
