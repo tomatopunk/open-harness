@@ -17,6 +17,10 @@ echo "== gateway demo SSE"
 curl -fsSN "$GATEWAY/api/langgraph/demo-stream" | head -n 3
 
 echo ""
+echo "== gateway openapi (schemas)"
+curl -fsS "$GATEWAY/openapi.json" | grep -q ChatCompletionRequest
+
+echo ""
 echo "== openai models"
 curl -fsS "$GATEWAY/v1/models"
 
@@ -52,8 +56,8 @@ echo ""
 curl -fsS -X POST "$CHANNEL/hooks/wecom" -H 'Content-Type: application/json' -d '{"Content":"hi","FromUserName":"u1"}'
 echo ""
 
-echo "== orchestrator pipeline"
-curl -fsS -X POST "$ORCH/internal/pipeline-check"
+echo "== orchestrator pipeline (runtime_metadata)"
+curl -fsS -X POST "$ORCH/internal/pipeline-check" | grep -q runtime_metadata
 echo ""
 echo "== manage core APIs"
 curl -fsS "$MANAGE/api/models"
@@ -79,4 +83,8 @@ echo "== orchestrator orchestrate"
 curl -fsS -X POST "$ORCH/internal/orchestrate" -H 'Content-Type: application/json' \
   -d '{"configurable":{"is_plan_mode":true,"subagent_enabled":true,"max_concurrent_subagents":2},"messages":["fact:smoke","hello"]}'
 echo ""
+if [[ -n "${OPEN_HARNESS_OTLP_ENDPOINT:-}" ]]; then
+  echo "== OTLP: OPEN_HARNESS_OTLP_ENDPOINT is set; gateway should initialize tracing exporter when reachable"
+fi
+
 echo "OK"
