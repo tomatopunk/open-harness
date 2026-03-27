@@ -29,7 +29,7 @@ mod task_runtime;
 mod tasks;
 mod thread_delete;
 
-use security::{sanitize_path_component, sanitize_relative_path};
+use security::{sanitize_path_component, sanitize_relative_path, sanitize_thread_id};
 use task_runtime::{dispatch_task, get_task, stream_task};
 pub(crate) use task_runtime::{TaskRecord, TaskStatus};
 use thread_delete::ThreadDeleteEngine;
@@ -487,6 +487,11 @@ async fn upload_thread_files(
     Path(thread_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
+            .into_response();
+    };
     let base = st.threads_root.join(thread_id).join("uploads");
     if tokio::fs::create_dir_all(&base).await.is_err() {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"create_dir"})))
@@ -518,6 +523,11 @@ async fn list_thread_uploads(
     State(st): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
+            .into_response();
+    };
     let base = st.threads_root.join(thread_id).join("uploads");
     let mut out = Vec::new();
     if let Ok(mut rd) = tokio::fs::read_dir(base).await {
@@ -527,13 +537,17 @@ async fn list_thread_uploads(
             }
         }
     }
-    Json(json!({"files": out}))
+    Json(json!({"files": out})).into_response()
 }
 
 async fn delete_thread_upload(
     State(st): State<AppState>,
     Path((thread_id, filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
+    };
     let Some(filename) = sanitize_path_component(&filename) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
@@ -555,6 +569,10 @@ async fn get_thread_artifact(
     Path((thread_id, path)): Path<(String, String)>,
     Query(query): Query<ArtifactQuery>,
 ) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
+    };
     let Some(path) = sanitize_relative_path(&path) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, "invalid artifact path").into_response();
@@ -580,6 +598,11 @@ async fn post_suggestions(
     Path(thread_id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
+            .into_response();
+    };
     let mut suggestions = Vec::new();
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         if let Some(last) = messages.last().and_then(|m| m.get("content")).and_then(|v| v.as_str())
@@ -593,7 +616,7 @@ async fn post_suggestions(
     }
     let task_path = st.local_fs_root.join("tasks").join(format!("{}.json", thread_id));
     let _ = persist_json(&task_path, &json!({"thread_id": thread_id, "suggestions": suggestions}));
-    Json(json!({"suggestions": suggestions}))
+    Json(json!({"suggestions": suggestions})).into_response()
 }
 
 fn persist_json(path: &PathBuf, value: &serde_json::Value) -> std::io::Result<()> {

@@ -18,6 +18,7 @@ use state_abstraction::ManageTaskRecord;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::security::sanitize_thread_id;
 use crate::task_access::can_access_task;
 use crate::tasks::{bump_task, is_terminal, prune_tasks, MAX_STREAM_CHUNKS};
 use crate::{now_ts, AppState};
@@ -190,6 +191,61 @@ fn conflict_response(task_id: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::CONFLICT, Json(json!({"error":"task_id_conflict","task_id": task_id})))
 }
 
+fn parse_task_status(status: &str) -> Option<TaskStatus> {
+    match status {
+        "queued" => Some(TaskStatus::Queued),
+        "running" => Some(TaskStatus::Running),
+        "completed" => Some(TaskStatus::Completed),
+        "failed" => Some(TaskStatus::Failed),
+        _ => None,
+    }
+}
+
+fn store_record_to_task(record: ManageTaskRecord) -> Option<TaskRecord> {
+    let status = parse_task_status(&record.status)?;
+    let created_at = record.created_at.timestamp();
+    let updated_at = record.updated_at.timestamp();
+    let version = u64::try_from(record.version).ok()?;
+    Some(TaskRecord {
+        task_id: record.task_id,
+        thread_id: record.thread_id,
+        status,
+        created_at,
+        updated_at,
+        version,
+        output_chunks: record.output_chunks,
+        error: record.error,
+        callback_url: record.callback_url,
+        stream: record.stream,
+        client_task_id: record.client_task_id,
+        tenant_id: record.tenant_id,
+        user_id: record.user_id,
+    })
+}
+
+async fn fetch_task_record(st: &AppState, task_id: &str) -> Option<TaskRecord> {
+    if let Some(task) = st.tasks.get(task_id) {
+        return Some(task.clone());
+    }
+    match st.manage_tasks.get_task(task_id).await {
+        Ok(Some(record)) => {
+            let Some(converted) = store_record_to_task(record) else {
+                tracing::warn!(task_id, "invalid persisted task record");
+                return None;
+            };
+            // Read-through cache: avoids repeated persistent lookups in stream polling.
+            let cached = converted.clone();
+            st.tasks.insert(task_id.to_string(), cached);
+            Some(converted)
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(task_id, error = %err, "load persisted task failed");
+            None
+        }
+    }
+}
+
 pub(crate) async fn dispatch_task(
     State(st): State<AppState>,
     Extension(auth_ctx): Extension<AuthContext>,
@@ -197,6 +253,10 @@ pub(crate) async fn dispatch_task(
     Json(body): Json<TaskDispatchRequest>,
 ) -> impl IntoResponse {
     metrics::counter!("open_harness_manage_requests_total").increment(1);
+    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+        metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})));
+    };
     metrics::counter!("open_harness_manage_task_created_total").increment(1);
     let task_id = body.client_task_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now_ts();
@@ -244,12 +304,12 @@ pub(crate) async fn get_task(
     Extension(auth_ctx): Extension<AuthContext>,
     Path(task_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Some(task) = st.tasks.get(&task_id) {
+    if let Some(task) = fetch_task_record(&st, &task_id).await {
         if !can_access_task(&task, &auth_ctx) {
             metrics::counter!("open_harness_manage_task_forbidden_total").increment(1);
             return (StatusCode::FORBIDDEN, Json(json!({"error":"forbidden"}))).into_response();
         }
-        return (StatusCode::OK, Json(json!(task.clone()))).into_response();
+        return (StatusCode::OK, Json(json!(task))).into_response();
     }
     (StatusCode::NOT_FOUND, Json(json!({"error":"task_not_found"}))).into_response()
 }
@@ -263,7 +323,7 @@ pub(crate) async fn stream_task(
         (st, task_id, auth_ctx, 0_u64, false),
         |(st, task_id, auth_ctx, mut seen, sent_end)| async move {
             tokio::time::sleep(Duration::from_millis(800)).await;
-            let Some(task) = st.tasks.get(&task_id).map(|v| v.clone()) else {
+            let Some(task) = fetch_task_record(&st, &task_id).await else {
                 let payload =
                     bytes::Bytes::from("event: error\ndata: {\"error\":\"task_not_found\"}\n\n");
                 return Some((
@@ -475,6 +535,8 @@ async fn run_single_response_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use state_abstraction::ManageTaskRecord;
 
     #[test]
     fn task_status_name_maps_as_expected() {
@@ -482,5 +544,81 @@ mod tests {
         assert_eq!(task_status_name(&TaskStatus::Running), "running");
         assert_eq!(task_status_name(&TaskStatus::Completed), "completed");
         assert_eq!(task_status_name(&TaskStatus::Failed), "failed");
+    }
+
+    #[test]
+    fn parse_task_status_handles_known_and_unknown_values() {
+        assert!(matches!(parse_task_status("queued"), Some(TaskStatus::Queued)));
+        assert!(matches!(parse_task_status("running"), Some(TaskStatus::Running)));
+        assert!(matches!(parse_task_status("completed"), Some(TaskStatus::Completed)));
+        assert!(matches!(parse_task_status("failed"), Some(TaskStatus::Failed)));
+        assert!(parse_task_status("unknown").is_none());
+    }
+
+    #[test]
+    fn store_record_to_task_rejects_invalid_status() {
+        let record = ManageTaskRecord {
+            task_id: "task-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            status: "bogus".to_string(),
+            output_chunks: vec![],
+            error: None,
+            callback_url: None,
+            stream: false,
+            client_task_id: None,
+            tenant_id: "tenant-a".to_string(),
+            user_id: "user-a".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 1,
+        };
+        assert!(store_record_to_task(record).is_none());
+    }
+
+    #[test]
+    fn store_record_to_task_maps_valid_record() {
+        let now = Utc::now();
+        let record = ManageTaskRecord {
+            task_id: "task-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            status: "running".to_string(),
+            output_chunks: vec!["chunk-1".to_string()],
+            error: None,
+            callback_url: Some("https://example.com/cb".to_string()),
+            stream: true,
+            client_task_id: Some("client-1".to_string()),
+            tenant_id: "tenant-a".to_string(),
+            user_id: "user-a".to_string(),
+            created_at: now,
+            updated_at: now,
+            version: 2,
+        };
+        let task = store_record_to_task(record).expect("valid record must map");
+        assert!(matches!(task.status, TaskStatus::Running));
+        assert_eq!(task.task_id, "task-1");
+        assert_eq!(task.thread_id, "thread-1");
+        assert_eq!(task.output_chunks, vec!["chunk-1".to_string()]);
+        assert!(task.stream);
+        assert_eq!(task.client_task_id, Some("client-1".to_string()));
+    }
+
+    #[test]
+    fn store_record_to_task_rejects_negative_version() {
+        let record = ManageTaskRecord {
+            task_id: "task-1".to_string(),
+            thread_id: "thread-1".to_string(),
+            status: "queued".to_string(),
+            output_chunks: vec![],
+            error: None,
+            callback_url: None,
+            stream: false,
+            client_task_id: None,
+            tenant_id: "tenant-a".to_string(),
+            user_id: "user-a".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: -1,
+        };
+        assert!(store_record_to_task(record).is_none());
     }
 }

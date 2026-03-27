@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 
+use crate::path_safety::sanitize_thread_id;
 use crate::traits::{
     ArtifactStore, CheckpointBlob, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
     SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask,
@@ -50,6 +51,14 @@ impl LocalFsStateStore {
 
     fn manage_task_path(&self, thread_id: &str) -> PathBuf {
         self.root.join("tasks").join(format!("manage-{thread_id}.json"))
+    }
+
+    fn require_valid_thread_id(thread_id: &str) -> Result<(), StateError> {
+        if sanitize_thread_id(thread_id).is_some() {
+            Ok(())
+        } else {
+            Err(StateError::Backend(format!("invalid thread_id: {}", thread_id)))
+        }
     }
 
     fn artifact_path(&self, thread_id: Uuid, name: &str) -> PathBuf {
@@ -271,6 +280,7 @@ impl SandboxExecutionStore for LocalFsStateStore {
 #[async_trait]
 impl ManageTaskStore for LocalFsStateStore {
     async fn upsert_task(&self, task: &ManageTaskRecord) -> Result<(), StateError> {
+        Self::require_valid_thread_id(&task.thread_id)?;
         let path = self.manage_task_path(&task.thread_id);
         let mut items = self.read_json_vec::<ManageTaskRecord>(&path).await?;
         if let Some(existing) = items.iter_mut().find(|t| t.task_id == task.task_id) {
@@ -310,6 +320,7 @@ impl ManageTaskStore for LocalFsStateStore {
         &self,
         thread_id: &str,
     ) -> Result<Vec<ManageTaskRecord>, StateError> {
+        Self::require_valid_thread_id(thread_id)?;
         self.read_json_vec::<ManageTaskRecord>(&self.manage_task_path(thread_id)).await
     }
 }
@@ -322,4 +333,40 @@ impl Default for LocalFsStateStore {
 
 pub fn now_utc() -> chrono::DateTime<Utc> {
     Utc::now()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::ManageTaskStore;
+
+    fn test_store() -> LocalFsStateStore {
+        let root =
+            std::env::temp_dir().join(format!("open-harness-local-fs-store-{}", Uuid::new_v4()));
+        LocalFsStateStore::new(root)
+    }
+
+    #[tokio::test]
+    async fn manage_task_rejects_invalid_thread_id() {
+        let store = test_store();
+        let record = ManageTaskRecord {
+            task_id: "task-1".to_string(),
+            thread_id: "../unsafe".to_string(),
+            status: "queued".to_string(),
+            output_chunks: vec![],
+            error: None,
+            callback_url: None,
+            stream: false,
+            client_task_id: None,
+            tenant_id: "tenant-a".to_string(),
+            user_id: "user-a".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 1,
+        };
+        let err = ManageTaskStore::upsert_task(&store, &record)
+            .await
+            .expect_err("must reject invalid thread id");
+        assert!(matches!(err, StateError::Backend(_)));
+    }
 }

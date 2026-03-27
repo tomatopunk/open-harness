@@ -1,5 +1,9 @@
 use std::path::{Component, Path, PathBuf};
 
+pub fn sanitize_thread_id(input: &str) -> Option<String> {
+    state_abstraction::sanitize_thread_id(input)
+}
+
 pub fn sanitize_path_component(input: &str) -> Option<String> {
     let path = Path::new(input);
     if path.components().count() != 1 {
@@ -41,6 +45,15 @@ pub fn sanitize_relative_path(input: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_id_rejects_unsafe_chars() {
+        assert_eq!(sanitize_thread_id("thread_1-abc"), Some("thread_1-abc".to_string()));
+        assert!(sanitize_thread_id("").is_none());
+        assert!(sanitize_thread_id("../a").is_none());
+        assert!(sanitize_thread_id("a/b").is_none());
+        assert!(sanitize_thread_id("a.b").is_none());
+    }
 
     #[test]
     fn component_rejects_traversal() {
