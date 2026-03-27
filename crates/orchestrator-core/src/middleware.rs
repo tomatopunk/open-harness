@@ -64,10 +64,7 @@ impl Middleware for TodoMiddleware {
         }
         let token_count = ctx.messages.iter().filter_map(|m| m.as_str()).map(str::len).sum();
         ctx.token_usage_estimate = token_count;
-        ctx.loop_detected = ctx
-            .messages
-            .windows(2)
-            .any(|w| w.first() == w.get(1));
+        ctx.loop_detected = ctx.messages.windows(2).any(|w| w.first() == w.get(1));
         Ok(())
     }
 }

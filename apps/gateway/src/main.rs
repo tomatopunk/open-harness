@@ -92,10 +92,7 @@ async fn openai_models(State(st): State<AppState>) -> impl IntoResponse {
             owned_by: "open-harness".into(),
         })
         .collect();
-    Json(OpenAiModelsResponse {
-        object: "list".into(),
-        data,
-    })
+    Json(OpenAiModelsResponse { object: "list".into(), data })
 }
 
 async fn openai_chat_completions(
@@ -113,11 +110,8 @@ async fn openai_chat_completions(
     }
 
     let thread_key = body.user.unwrap_or_else(|| "default".to_string());
-    let thread_id = st
-        .conversation_map
-        .entry(thread_key)
-        .or_insert_with(|| Uuid::new_v4().to_string())
-        .clone();
+    let thread_id =
+        st.conversation_map.entry(thread_key).or_insert_with(|| Uuid::new_v4().to_string()).clone();
 
     if let Err(e) = ensure_thread(&st, &thread_id).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response();
@@ -160,40 +154,45 @@ async fn openai_chat_completions(
     if !upstream.status().is_success() {
         let status = upstream.status();
         let body = upstream.text().await.unwrap_or_else(|_| "upstream error".into());
-        return (StatusCode::BAD_GATEWAY, Json(json!({ "status": status.as_u16(), "error": body })))
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "status": status.as_u16(), "error": body })),
+        )
             .into_response();
     }
 
     if stream {
         let stream = upstream.bytes_stream();
-        let body_stream =
-            futures::stream::unfold((stream, request_id.clone()), |(mut s, req_id)| async move {
-            match futures::StreamExt::next(&mut s).await {
-                Some(Ok(chunk)) => {
-                    let payload = String::from_utf8_lossy(&chunk);
-                    let content = extract_assistant_text(&payload);
-                    let sse_chunk = if let Some(text) = content {
-                        let chunk_id = req_id.clone();
-                        format!(
-                            "data: {}\n\n",
-                            json!({
-                                "id": chunk_id,
-                                "object": "chat.completion.chunk",
-                                "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": serde_json::Value::Null }]
-                            })
-                        )
-                    } else {
-                        "data: [DONE]\n\n".to_string()
-                    };
-                    Some((
-                        Ok::<_, std::convert::Infallible>(bytes::Bytes::from(sse_chunk)),
-                        (s, req_id),
-                    ))
+        let body_stream = futures::stream::unfold(
+            (stream, request_id.clone()),
+            |(mut s, req_id)| async move {
+                match futures::StreamExt::next(&mut s).await {
+                    Some(Ok(chunk)) => {
+                        let payload = String::from_utf8_lossy(&chunk);
+                        let content = extract_assistant_text(&payload);
+                        let sse_chunk = if let Some(text) = content {
+                            let chunk_id = req_id.clone();
+                            format!(
+                                "data: {}\n\n",
+                                json!({
+                                    "id": chunk_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": serde_json::Value::Null }]
+                                })
+                            )
+                        } else {
+                            "data: [DONE]\n\n".to_string()
+                        };
+                        Some((
+                            Ok::<_, std::convert::Infallible>(bytes::Bytes::from(sse_chunk)),
+                            (s, req_id),
+                        ))
+                    }
+                    Some(Err(_)) => None,
+                    None => None,
                 }
-                Some(Err(_)) => None,
-                None => None,
-            }
-        });
+            },
+        );
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
@@ -201,10 +200,7 @@ async fn openai_chat_completions(
             .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build").into_response());
     }
 
-    let text = match upstream.text().await {
-        Ok(t) => t,
-        Err(_) => String::new(),
-    };
+    let text: String = (upstream.text().await).unwrap_or_default();
     let content = extract_assistant_text(&text).unwrap_or_else(|| "ok".to_string());
     Json(json!({
         "id": request_id,
@@ -239,17 +235,12 @@ fn extract_assistant_text(payload: &str) -> Option<String> {
             continue;
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
-            if let Some(content) = v
-                .get("data")
-                .and_then(|d| d.get("content"))
-                .and_then(|c| c.as_str())
+            if let Some(content) =
+                v.get("data").and_then(|d| d.get("content")).and_then(|c| c.as_str())
             {
                 return Some(content.to_string());
             }
-            if let Some(content) = v
-                .get("content")
-                .and_then(|c| c.as_str())
-            {
+            if let Some(content) = v.get("content").and_then(|c| c.as_str()) {
                 return Some(content.to_string());
             }
         }
@@ -259,17 +250,8 @@ fn extract_assistant_text(payload: &str) -> Option<String> {
 
 async fn ensure_thread(st: &AppState, thread_id: &str) -> Result<(), String> {
     let url = format!("{}/threads", st.langgraph_upstream.trim_end_matches('/'));
-    let body = ThreadCreate {
-        thread_id: Some(thread_id.to_string()),
-        metadata: None,
-    };
-    let resp = st
-        .client
-        .post(url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let body = ThreadCreate { thread_id: Some(thread_id.to_string()), metadata: None };
+    let resp = st.client.post(url).json(&body).send().await.map_err(|e| e.to_string())?;
     if resp.status().is_success() || resp.status().as_u16() == 409 {
         Ok(())
     } else {

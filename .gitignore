@@ -4,3 +4,4 @@
 .env.*
 .deer-flow/
 .DS_Store
+.cursor

@@ -41,11 +41,8 @@ async fn main() -> anyhow::Result<()> {
     registry.register(Box::new(ding.clone()));
     registry.register(Box::new(WeComDriver));
     let cfg = load_or_default();
-    let model_name = cfg
-        .models
-        .first()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| "gpt-4".to_string());
+    let model_name =
+        cfg.models.first().map(|m| m.name.clone()).unwrap_or_else(|| "gpt-4".to_string());
 
     let state = AppState {
         registry: Arc::new(registry),
@@ -100,10 +97,8 @@ async fn channel_hook(
         "chat" => env.text.clone().unwrap_or_default(),
         _ => format!("{} {}", cmd.command, cmd.args.join(" ")),
     };
-    let thread_key = cmd
-        .thread_hint
-        .clone()
-        .unwrap_or_else(|| format!("{}:{}", platform, env.chat_id));
+    let thread_key =
+        cmd.thread_hint.clone().unwrap_or_else(|| format!("{}:{}", platform, env.chat_id));
     let gateway = if st.gateway_url.starts_with("http") {
         st.gateway_url.clone()
     } else {
@@ -135,9 +130,5 @@ async fn channel_hook(
         Err(e) => format!("gateway_error: {e}"),
     };
     let _ = driver.send_message(&env.chat_id, &reply).await;
-    Json(json!(HookResponse {
-        platform,
-        delivered: true,
-        reply
-    }))
+    Json(json!(HookResponse { platform, delivered: true, reply }))
 }
