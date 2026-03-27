@@ -74,7 +74,8 @@ async fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(local_fs_root.join("memory")).ok();
     }
 
-    let delete_engine = ThreadDeleteEngine::new(threads_root.clone(), cfg.manage.langgraph_url.clone());
+    let delete_engine =
+        ThreadDeleteEngine::new(threads_root.clone(), cfg.manage.langgraph_url.clone());
 
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_manage_requests_total", "Manage API requests");
@@ -131,32 +132,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/skills", get(list_skills))
         .route("/api/skills/:skill_name", get(get_skill).put(update_skill))
         .route("/api/threads/:thread_id", axum::routing::delete(delete_thread_plain))
-        .route(
-            "/api/threads/:thread_id/uploads",
-            post(upload_thread_files),
-        )
-        .route(
-            "/api/threads/:thread_id/uploads/list",
-            get(list_thread_uploads),
-        )
+        .route("/api/threads/:thread_id/uploads", post(upload_thread_files))
+        .route("/api/threads/:thread_id/uploads/list", get(list_thread_uploads))
         .route(
             "/api/threads/:thread_id/uploads/:filename",
             axum::routing::delete(delete_thread_upload),
         )
-        .route(
-            "/api/threads/:thread_id/artifacts/*path",
-            get(get_thread_artifact),
-        )
-        .route(
-            "/api/threads/:thread_id/suggestions",
-            post(post_suggestions),
-        )
+        .route("/api/threads/:thread_id/artifacts/*path", get(get_thread_artifact))
+        .route("/api/threads/:thread_id/suggestions", post(post_suggestions))
         .route("/api/agents", get(list_agents).post(create_agent))
         .route("/api/agents/check", get(check_agent_name))
-        .route(
-            "/api/agents/:name",
-            get(get_agent).put(update_agent).delete(delete_agent),
-        )
+        .route("/api/agents/:name", get(get_agent).put(update_agent).delete(delete_agent))
         .route("/api/user-profile", get(get_user_profile).put(put_user_profile))
         .route("/api/channels/", get(get_channels))
         .route("/api/channels/:name/restart", post(restart_channel))
@@ -268,10 +254,7 @@ async fn put_mcp_config(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let mut s = st.store.write().await;
-    s.mcp_servers = body
-        .get("mcp_servers")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    s.mcp_servers = body.get("mcp_servers").cloned().unwrap_or_else(|| json!({}));
     let _ = persist_json(&st.local_fs_root.join("config").join("mcp_servers.json"), &s.mcp_servers);
     Json(json!({ "mcp_servers": s.mcp_servers }))
 }
@@ -303,11 +286,8 @@ async fn get_memory_status(State(st): State<AppState>) -> impl IntoResponse {
 
 async fn list_skills(State(st): State<AppState>) -> impl IntoResponse {
     let s = st.store.read().await;
-    let skills: Vec<serde_json::Value> = s
-        .skills
-        .iter()
-        .map(|(name, enabled)| json!({"name": name, "enabled": enabled}))
-        .collect();
+    let skills: Vec<serde_json::Value> =
+        s.skills.iter().map(|(name, enabled)| json!({"name": name, "enabled": enabled})).collect();
     Json(json!({ "skills": skills }))
 }
 
@@ -423,7 +403,8 @@ async fn post_suggestions(
 ) -> impl IntoResponse {
     let mut suggestions = Vec::new();
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-        if let Some(last) = messages.last().and_then(|m| m.get("content")).and_then(|v| v.as_str()) {
+        if let Some(last) = messages.last().and_then(|m| m.get("content")).and_then(|v| v.as_str())
+        {
             suggestions.push(format!("请展开：{}", last.chars().take(24).collect::<String>()));
             suggestions.push("请给出实现步骤".to_string());
         }
@@ -431,10 +412,7 @@ async fn post_suggestions(
     if suggestions.is_empty() {
         suggestions.push("请继续".to_string());
     }
-    let task_path = st
-        .local_fs_root
-        .join("tasks")
-        .join(format!("{}.json", thread_id));
+    let task_path = st.local_fs_root.join("tasks").join(format!("{}.json", thread_id));
     let _ = persist_json(&task_path, &json!({"thread_id": thread_id, "suggestions": suggestions}));
     Json(json!({"suggestions": suggestions}))
 }
