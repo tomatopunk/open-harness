@@ -69,6 +69,9 @@ pub struct ChannelsConfig {
 pub struct RuntimeConfig {
     #[serde(default = "default_runtime_engine")]
     pub engine: String,
+    /// Directory containing governance YAML (`models.yaml`, `tools.yaml`, `policies.yaml`, `subagents.yaml`).
+    #[serde(default = "default_governance_root")]
+    pub governance_root: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -206,11 +209,15 @@ fn default_channels() -> ChannelsConfig {
 }
 
 fn default_runtime_engine() -> String {
-    "llm-chain".to_string()
+    "inner".to_string()
+}
+
+fn default_governance_root() -> String {
+    "governance".into()
 }
 
 fn default_runtime() -> RuntimeConfig {
-    RuntimeConfig { engine: default_runtime_engine() }
+    RuntimeConfig { engine: default_runtime_engine(), governance_root: default_governance_root() }
 }
 
 fn default_storage() -> StorageConfig {
@@ -300,7 +307,8 @@ channels:
     - wecom
 
 runtime:
-  engine: llm-chain
+  engine: inner
+  governance_root: governance
 "#;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
