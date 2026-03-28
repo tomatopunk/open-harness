@@ -1,8 +1,8 @@
-//! P1 **superstep 调度内核**：`prepare_tasks` → `execute_tasks` → `apply_writes`。
+//! P1 **superstep 调度内核**：`prepare_tasks` → **execute 面** → `apply_writes`。
 //!
 //! - **prepare_tasks**：新一轮外层超步开始，清空 [`agent_ports::PregelMeta::staged_tasks`]。
 //! - **prepare**：`prepare::*` 将 PULL/PUSH 任务写入 `staged_tasks`（与 LangGraph `prepare_next_tasks` 对齐的 harness 落点）。
-//! - **execute**：`execute::*` 承载并发执行面（工具扇出等），与 prepare 阶段写入的 PUSH 信封一一对应。
+//! - **execute（统一执行面）**：Lead 相位编排见 [`crate::lead_outer_superstep`]；post-model 由 [`crate::dispatch::execute_dispatch_plan`] 消费 Command IR；`execute::*` 中 `invoke_tool_calls_in_call_order` 与 PUSH 信封对齐。
 //! - **apply_writes_after_node**：节点副作用提交后 bump channel + 记录 `pending_write_queue`（[`crate::pregel::bump_after_node`]）。
 
 use crate::pregel;
@@ -27,12 +27,42 @@ pub fn apply_writes_after_node(state: &mut agent_ports::ThreadState, node_id: &s
 
 /// Phase 2 — 可并发执行单元（工具扇出等）。
 pub mod execute {
-    use agent_ports::{RunId, ThreadId, ToolCallSpec};
+    use agent_ports::{RunId, TaskKind, ThreadId, ToolCallSpec};
     use futures::stream::{self, StreamExt};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tracing::warn;
+
+    /// `staged_tasks` 尾部必须与 `calls` 一一对应（`tool_invoke` + `call_id`）。
+    pub fn verify_tool_push_tail_matches(
+        state: &agent_ports::ThreadState,
+        calls: &[ToolCallSpec],
+    ) -> Result<(), String> {
+        let n = calls.len();
+        if n > state.pregel.staged_tasks.len() {
+            return Err(format!(
+                "staged_tasks len {} < tool batch {}",
+                state.pregel.staged_tasks.len(),
+                n
+            ));
+        }
+        let start = state.pregel.staged_tasks.len() - n;
+        for (i, call) in calls.iter().enumerate() {
+            let t = &state.pregel.staged_tasks[start + i];
+            match &t.kind {
+                TaskKind::Push { fanout_id, call_id }
+                    if fanout_id == "tool_invoke" && call_id == &call.call_id => {}
+                other => {
+                    return Err(format!(
+                        "tool PUSH mismatch at {i}: expected tool_invoke+{}, got {other:?}",
+                        call.call_id
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 
     /// 并行执行工具调用，**按 `calls` 顺序**对齐结果（以 `tool_call_id` 回填，完成顺序任意）。
     pub(crate) async fn invoke_tool_calls_in_call_order(
@@ -43,8 +73,7 @@ pub mod execute {
         max_concurrent: usize,
     ) -> Vec<Result<Value, String>> {
         let pairs: Vec<(String, Result<Value, String>)> =
-            stream::iter(calls.iter().map(|call| {
-                let call = call.clone();
+            stream::iter(calls.iter().cloned().map(|call| {
                 let tools = tools.clone();
                 async move {
                     let id = call.call_id.clone();
@@ -60,7 +89,13 @@ pub mod execute {
         let mut map: HashMap<String, Result<Value, String>> = HashMap::with_capacity(pairs.len());
         for (id, res) in pairs {
             if map.insert(id.clone(), res).is_some() {
-                warn!("duplicate tool_call_id in concurrent tool results: {}", id);
+                warn!("duplicate tool_call_id in concurrent tool batch: {}", id);
+                return calls
+                    .iter()
+                    .map(|c| {
+                        Err(format!("duplicate tool_call_id in concurrent batch: {}", c.call_id))
+                    })
+                    .collect();
             }
         }
 

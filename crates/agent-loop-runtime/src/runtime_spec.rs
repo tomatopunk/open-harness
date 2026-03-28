@@ -41,3 +41,19 @@ pub struct SubagentRuntimeSpec {
     /// When true, subagent runs use the same PreModel skill/memory path as the lead template.
     pub inherit_premodel_skills_memory: bool,
 }
+
+impl SubagentRuntimeSpec {
+    /// Optional PreModel phase before subagent plan execution (must match scheduler pulls).
+    pub const NODE_PREMODEL: &'static str = "subagent_premodel";
+}
+
+/// Post-model dispatch phase node ids (single source of truth for `apply_writes_after_node`).
+#[derive(Debug, Clone, Copy)]
+pub struct DispatchPhaseNodes;
+
+impl DispatchPhaseNodes {
+    pub const CLARIFY: &'static str = "dispatch_clarify";
+    pub const SUBAGENT: &'static str = "dispatch_subagent";
+    pub const TOOLS: &'static str = "dispatch_tools";
+    pub const TEXT: &'static str = "dispatch_text";
+}
