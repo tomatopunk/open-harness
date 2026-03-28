@@ -105,11 +105,17 @@ pub struct SubagentExecuteParams {
     pub max_concurrent: u32,
     /// Per-task wall-clock limit (None = no timeout).
     pub per_task_timeout: Option<Duration>,
+    /// ChildRun: mirror lead PreModel skill/memory when true.
+    pub inherit_premodel_skills_memory: bool,
 }
 
 impl Default for SubagentExecuteParams {
     fn default() -> Self {
-        Self { max_concurrent: 4, per_task_timeout: Some(Duration::from_secs(120)) }
+        Self {
+            max_concurrent: 4,
+            per_task_timeout: Some(Duration::from_secs(120)),
+            inherit_premodel_skills_memory: false,
+        }
     }
 }
 
