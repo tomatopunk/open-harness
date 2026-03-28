@@ -60,4 +60,5 @@ channels:
   # WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
 
 runtime:
-  engine: llm-chain
+  engine: inner
+  governance_root: governance
