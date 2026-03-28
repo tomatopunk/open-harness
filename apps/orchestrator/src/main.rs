@@ -294,8 +294,8 @@ async fn run_orchestrate_with_state(
             base_state,
             body.messages.clone(),
             budget,
-            &tool_cfg,
-            &run_cfg,
+            tool_cfg,
+            run_cfg,
         )
         .await;
 
