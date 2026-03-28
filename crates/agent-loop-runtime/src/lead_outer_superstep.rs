@@ -1,14 +1,16 @@
-//! One **outer superstep** (one `run_agent_loop` iteration): `prepare_tasks` → phase pulls → dispatch.
+//! One **outer superstep**（一次 `run_agent_loop` 迭代）：`prepare_tasks` → PULL 相位执行 →
+//! [`crate::dispatch::execute_dispatch_plan`]（Command IR / LangGraph 式 execute 面）。
 //!
-//! All phase nodes follow the same `prepare_pull_task` → work → [`crate::superstep_kernel::apply_writes_after_node`] pattern so execution stays aligned with [`agent_ports::PregelMeta::staged_tasks`].
+//! 编排集中在此模块，[`crate::superstep_kernel`] 提供 `prepare_tasks` / `apply_writes_after_node` / 工具执行。
 
 use crate::agent_loop_types::{AgentLoopDeps, ToolLoopConfig};
-use crate::dispatch::{execute_engine_command, route_llm_output, TurnDispatch};
+use crate::dispatch::{execute_dispatch_plan, route_llm_output, TurnDispatch};
 use crate::error::AgentLoopResult;
 use crate::lead_kernel::apply_lead_kernel_turn;
 use crate::loop_common::emit_stage;
 use crate::loop_hardening::{apply_repeated_tool_loop_breaker, repair_missing_tool_results};
 use crate::middleware::TurnContext;
+use crate::premodel_phase::run_premodel_skills_memory;
 use crate::run_config::AgentLoopRunConfig;
 use crate::superstep_kernel::prepare::prepare_pull_task;
 use crate::superstep_kernel::{apply_writes_after_node, prepare_tasks};
@@ -17,12 +19,12 @@ use graph_runtime_core::GraphRuntime;
 use serde_json::json;
 use tracing::debug;
 
-/// Run one full inner superstep: Lead → PreModel → Model → PostModel → [`execute_engine_command`].
+/// Run one full inner superstep: Lead → PreModel → Model → PostModel → [`execute_dispatch_plan`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_inner_superstep_turn(
     graph: &GraphRuntime,
     deps: &AgentLoopDeps,
-    turn_ctx: &TurnContext,
+    turn_ctx: TurnContext,
     thread_id: ThreadId,
     run_id: agent_ports::RunId,
     step_seq: agent_ports::StepSeq,
@@ -32,6 +34,7 @@ pub(crate) async fn execute_inner_superstep_turn(
     run_cfg: &AgentLoopRunConfig,
     last_tool_call_fingerprint: &mut Option<u64>,
 ) -> AgentLoopResult<TurnDispatch> {
+    // --- prepare_tasks：清空 staged_tasks，开始本回合超步 ---
     prepare_tasks(state);
 
     // --- Node: Lead ---
@@ -45,45 +48,25 @@ pub(crate) async fn execute_inner_superstep_turn(
 
     // --- Node: PreModel ---
     prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL);
-    emit_stage(sink, run_id, step_seq, LoopStage::PreModel, true);
-    sink.push(AgentEvent::StepStarted { run_id, step_seq, kind: agent_ports::StepKind::Llm });
-
-    let mut injection = agent_ports::SkillInjection::default();
-    if run_cfg.lead_spec.premodel_skills_memory {
-        let skill_names = if run_cfg.skills_globally_enabled {
-            run_cfg.enabled_skill_names.clone()
-        } else {
-            Vec::new()
-        };
-        injection = deps
-            .skills
-            .inject(&agent_ports::SkillContext { thread_id, enabled_skill_names: skill_names })
-            .await?;
-        if !injection.resolved_names.is_empty() {
-            sink.push(AgentEvent::SkillInjected { skill_names: injection.resolved_names.clone() });
-        }
-
-        let mem_snippets = deps
-            .memory
-            .retrieve(&agent_ports::MemoryContext {
-                thread_id,
-                run_id,
-                query: "turn".into(),
-                state: state.clone(),
-            })
-            .await?;
-        if !mem_snippets.is_empty() {
-            state.memory_working_set.snippets = mem_snippets;
-        }
-    }
-    emit_stage(sink, run_id, step_seq, LoopStage::PreModel, false);
+    let injection = run_premodel_skills_memory(
+        deps,
+        &turn_ctx,
+        thread_id,
+        run_id,
+        step_seq,
+        state,
+        sink,
+        run_cfg,
+        run_cfg.lead_spec.premodel_skills_memory,
+    )
+    .await?;
     apply_writes_after_node(state, crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL);
 
     let manifests = deps.tools.assemble(&tool_cfg.assembly);
     let assembled_tool_names: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
     let mut messages_for_llm = build_llm_messages(state, &injection.preamble, run_cfg);
 
-    deps.middleware.before_model(turn_ctx, state, &mut messages_for_llm).await?;
+    deps.middleware.before_model(&turn_ctx, state, &mut messages_for_llm).await?;
 
     // --- Node: Model ---
     prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_MODEL);
@@ -106,7 +89,7 @@ pub(crate) async fn execute_inner_superstep_turn(
     // --- Node: PostModel ---
     prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL);
     emit_stage(sink, run_id, step_seq, LoopStage::PostModel, true);
-    deps.middleware.after_model(turn_ctx, state, &out).await?;
+    deps.middleware.after_model(&turn_ctx, state, &out).await?;
     emit_stage(sink, run_id, step_seq, LoopStage::PostModel, false);
     apply_writes_after_node(state, crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL);
 
@@ -116,18 +99,18 @@ pub(crate) async fn execute_inner_superstep_turn(
     sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: agent_ports::StepKind::Llm });
     emit_stage(sink, run_id, step_seq, LoopStage::Model, false);
 
-    let cmd = route_llm_output(&out);
-    execute_engine_command(
+    let plan = route_llm_output(&out, run_cfg)?;
+    execute_dispatch_plan(
         graph,
         deps,
-        turn_ctx,
+        &turn_ctx,
         thread_id,
         run_id,
         step_seq,
         state,
         sink,
         &manifests,
-        cmd,
+        plan,
         &out,
         turn_ctx.budget,
     )
