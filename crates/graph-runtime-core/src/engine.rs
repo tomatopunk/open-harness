@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use agent_ports::{CheckpointPort, RunId, StepSeq, ThreadId, ThreadState};
+use agent_ports::{apply_state_effects, CheckpointPort, RunId, StepSeq, ThreadId, ThreadState};
 use uuid::Uuid;
 
 use crate::checkpoint_store::make_checkpoint;
@@ -66,7 +66,11 @@ impl GraphRuntime {
         else {
             return Err(GraphRuntimeError::RunNotFound(format!("{run_id:?}")));
         };
-        Ok(cp.state)
+        let mut state = cp.state;
+        if !cp.engine.pending_state_effects.is_empty() {
+            apply_state_effects(&mut state, &cp.engine.pending_state_effects);
+        }
+        Ok(state)
     }
 
     /// Advance step cursor and persist checkpoint after external state mutation.
@@ -136,7 +140,31 @@ pub fn parse_thread_id(s: &str) -> Option<ThreadId> {
 mod tests {
     use super::*;
     use agent_adapters::MemoryCheckpointAdapter;
-    use agent_ports::ChatMessage;
+    use agent_ports::{ChatMessage, StateEffect};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn resume_applies_pending_state_effects() {
+        let port: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
+        let rt = GraphRuntime::new(port.clone());
+        let tid = ThreadId::new_v4();
+        let base = ThreadState::new(tid);
+        let run = rt.start_run(tid, base).await.expect("start");
+
+        let mut st = ThreadState::new(tid);
+        st.thread_id = tid;
+        st.active_run_id = Some(run.run_id);
+        st.step_seq = agent_ports::StepSeq::initial();
+
+        let pending = vec![StateEffect::AppendAssistantMessage { text: "from_pending".into() }];
+        let mut cp = crate::checkpoint_store::make_checkpoint(tid, run.run_id, st, json!({}));
+        cp.engine.pending_state_effects = pending;
+        port.save(cp).await.expect("save");
+
+        let resumed = rt.resume_run(tid, run.run_id).await.expect("resume");
+        assert_eq!(resumed.messages.len(), 1);
+        assert_eq!(resumed.messages[0].content, json!("from_pending"));
+    }
 
     #[tokio::test]
     async fn start_commit_resume() {

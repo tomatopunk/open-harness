@@ -16,8 +16,10 @@ pub fn make_checkpoint(
     let step_seq = state.step_seq;
     let engine = EngineCheckpointExtensions {
         state_schema_version: state.state_schema_version,
-        pending_writes_count: 1,
+        pending_writes_count: state.pregel.pending_write_queue.len() as u32,
         resume_cursor: None,
+        pending_state_effects: Vec::new(),
+        superstep_seq: state.pregel.superstep_seq,
     };
     CheckpointRecord {
         record_schema_version: CHECKPOINT_RECORD_SCHEMA_VERSION,
