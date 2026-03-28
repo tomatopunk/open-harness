@@ -3,6 +3,8 @@
 use agent_ports::TodoItem;
 use protocol_compat::Configurable;
 
+use crate::runtime_spec::{LeadRuntimeSpec, SubagentRuntimeSpec};
+
 /// Knobs that align the inner loop with lead-pipeline middleware and governance.
 #[derive(Debug, Clone)]
 pub struct AgentLoopRunConfig {
@@ -17,6 +19,9 @@ pub struct AgentLoopRunConfig {
     pub loop_detected: bool,
     /// Seed todos when plan mode or middleware produced steps.
     pub seed_todos: Vec<TodoItem>,
+    /// Lead-oriented phase gates (shared baseline vs subagent-only overrides at call sites).
+    pub lead_spec: LeadRuntimeSpec,
+    pub subagent_spec: SubagentRuntimeSpec,
 }
 
 impl Default for AgentLoopRunConfig {
@@ -30,6 +35,8 @@ impl Default for AgentLoopRunConfig {
             enabled_skill_names: Vec::new(),
             loop_detected: false,
             seed_todos: Vec::new(),
+            lead_spec: LeadRuntimeSpec::default(),
+            subagent_spec: SubagentRuntimeSpec::default(),
         }
     }
 }

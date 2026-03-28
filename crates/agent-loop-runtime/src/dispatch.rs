@@ -1,23 +1,26 @@
-//! Post-model execution kernel: maps [`agent_ports::EngineCommand`] to checkpoints and side effects.
-//!
-//! Tool invocations run with bounded concurrency; middleware hooks stay sequential for deterministic state access.
+//! Post-model dispatch: maps [`agent_ports::EngineCommand`] to checkpoints and side effects.
 
 use crate::budget::RunBudget;
 use crate::commit_metadata;
 use crate::error::AgentLoopResult;
-use crate::loop_engine::{commit_at_stage, emit_stage, AgentLoopDeps};
+use crate::loop_common::commit_at_stage;
 use crate::middleware::TurnContext;
+use crate::pregel::bump_after_node;
+use crate::scheduler::{prepare_subagent_fanout, prepare_tool_fanout};
 use crate::state_patch::StatePatch;
 use crate::turn_reducer::{apply_turn_effects, tool_round_from_calls, TurnEffect};
 use agent_ports::{
-    tool_allowed, AgentEvent, EngineCommand, EventSink, LoopStage, StepKind, SubagentExecuteParams,
-    ThreadId, ToolCallSpec, ToolManifest, ToolPort,
+    classify_llm_routing, tool_allowed, AgentEvent, EngineCommand, EventSink, LoopStage, StepKind,
+    SubagentExecuteParams, ThreadId, ToolCallSpec, ToolManifest, ToolPort,
 };
 use futures::stream::{self, StreamExt};
 use graph_runtime_core::GraphRuntime;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::warn;
+
+use crate::agent_loop_types::AgentLoopDeps;
 
 /// Outer loop control after one post-model step completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,22 +29,42 @@ pub(crate) enum TurnDispatch {
     Again,
 }
 
-/// Run parallel tool invokes with a bounded fan-out (middleware before/after stays sequential).
-async fn invoke_tools_bounded(
+/// Run parallel tool invokes with bounded fan-out; results are realigned to `calls` order by `call_id`.
+async fn invoke_tools_mapped_to_call_order(
     tools: Arc<dyn ToolPort>,
     run_id: agent_ports::RunId,
     thread_id: ThreadId,
-    calls: Vec<ToolCallSpec>,
+    calls: &[ToolCallSpec],
     max_concurrent: usize,
 ) -> Vec<Result<Value, String>> {
-    stream::iter(calls.into_iter())
-        .map(|call| {
+    let pairs: Vec<(String, Result<Value, String>)> =
+        stream::iter(calls.iter().cloned().map(|call| {
             let tools = tools.clone();
-            async move { tools.invoke(run_id, thread_id, &call).await.map_err(|e| e.to_string()) }
-        })
+            async move {
+                let id = call.call_id.clone();
+                let res = tools.invoke(run_id, thread_id, &call).await.map_err(|e| e.to_string());
+                (id, res)
+            }
+        }))
         .buffer_unordered(max_concurrent.max(1))
         .collect()
-        .await
+        .await;
+
+    let mut map: HashMap<String, Result<Value, String>> = HashMap::with_capacity(pairs.len());
+    for (id, res) in pairs {
+        if map.insert(id.clone(), res).is_some() {
+            warn!("duplicate tool_call_id in concurrent tool results: {}", id);
+        }
+    }
+
+    calls
+        .iter()
+        .map(|c| {
+            map.remove(&c.call_id).unwrap_or_else(|| {
+                Err(format!("missing tool result for call_id={} name={}", c.call_id, c.name))
+            })
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -63,12 +86,13 @@ pub(crate) async fn execute_engine_command(
         EngineCommand::ClarifyExit => {
             apply_turn_effects(
                 state,
-                vec![TurnEffect::SetClarification { prompt: out.clarification_prompt.clone() }],
+                &[TurnEffect::SetClarification { prompt: out.clarification_prompt.clone() }],
             );
             sink.push(AgentEvent::ClarificationRequested {
                 run_id,
                 prompt: out.clarification_prompt.clone(),
             });
+            bump_after_node(state, "dispatch_clarify");
             *state = commit_at_stage(
                 graph,
                 thread_id,
@@ -84,7 +108,8 @@ pub(crate) async fn execute_engine_command(
         }
         EngineCommand::Subagent { plan, finish_turn } => {
             let max_t = budget.max_subagent_tasks.max(1) as usize;
-            let effective_cap = max_t.min(4);
+            let cap = budget.subagent_task_cap_per_response.max(1) as usize;
+            let effective_cap = max_t.min(cap);
             let original_len = plan.tasks.len();
             let truncated_plan = agent_ports::SubtaskPlan {
                 tasks: plan.tasks.into_iter().take(effective_cap).collect(),
@@ -98,16 +123,18 @@ pub(crate) async fn execute_engine_command(
                 task_count: truncated_plan.tasks.len(),
             });
 
-            emit_stage(sink, run_id, step_seq, LoopStage::SubagentExec, true);
+            prepare_subagent_fanout(state, truncated_plan.tasks.len());
+
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::SubagentExec, true);
             let sub_params = SubagentExecuteParams {
                 max_concurrent: budget.max_concurrent_subagents.max(1),
-                per_task_timeout: Some(std::time::Duration::from_secs(120)),
+                per_task_timeout: budget.per_subagent_task_timeout,
             };
             let results = deps
                 .subagents
                 .execute_plan(run_id, thread_id, &truncated_plan, state, &sub_params, sink)
                 .await?;
-            emit_stage(sink, run_id, step_seq, LoopStage::SubagentExec, false);
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::SubagentExec, false);
 
             let mut records = Vec::with_capacity(results.len());
             for (i, r) in results.iter().enumerate() {
@@ -120,7 +147,7 @@ pub(crate) async fn execute_engine_command(
                     output: Some(r.output.clone()),
                 });
             }
-            apply_turn_effects(state, vec![TurnEffect::AppendSubagentRecords(records)]);
+            apply_turn_effects(state, &[TurnEffect::AppendSubagentRecords { records }]);
 
             let merged = deps
                 .subagents
@@ -129,9 +156,11 @@ pub(crate) async fn execute_engine_command(
                     &results,
                 )
                 .await?;
-            apply_turn_effects(state, vec![TurnEffect::ReplaceFromMerge(Box::new(merged))]);
+            apply_turn_effects(state, &[TurnEffect::ReplaceFromMerge { state: Box::new(merged) }]);
 
-            emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
+            bump_after_node(state, "dispatch_subagent");
+
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
                 graph,
                 thread_id,
@@ -142,7 +171,13 @@ pub(crate) async fn execute_engine_command(
                 commit_metadata::state_commit_after_subagent(truncated_plan.tasks.len(), truncated),
             )
             .await?;
-            emit_stage(sink, run_id, state.step_seq, LoopStage::StateCommit, false);
+            crate::loop_common::emit_stage(
+                sink,
+                run_id,
+                state.step_seq,
+                LoopStage::StateCommit,
+                false,
+            );
 
             if finish_turn {
                 Ok(TurnDispatch::Stop)
@@ -151,7 +186,7 @@ pub(crate) async fn execute_engine_command(
             }
         }
         EngineCommand::ToolCalls { calls, finish_turn } => {
-            emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, true);
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, true);
             sink.push(AgentEvent::StepStarted { run_id, step_seq, kind: StepKind::Tool });
 
             let mut allowed: Vec<ToolCallSpec> = Vec::new();
@@ -164,23 +199,29 @@ pub(crate) async fn execute_engine_command(
                 allowed.push(call.clone());
             }
 
+            prepare_tool_fanout(state, &allowed);
+
             for call in &allowed {
                 deps.middleware.before_tool_call(turn_ctx, state, call).await?;
             }
 
             let max_c = budget.max_concurrent_tool_calls.max(1) as usize;
-            let payloads =
-                invoke_tools_bounded(deps.tools.clone(), run_id, thread_id, allowed.clone(), max_c)
-                    .await;
+            let payloads = invoke_tools_mapped_to_call_order(
+                deps.tools.clone(),
+                run_id,
+                thread_id,
+                &allowed,
+                max_c,
+            )
+            .await;
 
             let mut tool_names: Vec<String> = Vec::with_capacity(allowed.len());
             for i in 0..allowed.len() {
                 let call = &allowed[i];
                 let payload_res = &payloads[i];
                 let ok = payload_res.is_ok();
-                let payload = payload_res
-                    .as_ref()
-                    .map_or_else(|e| json!({ "error": e }), |v| v.clone());
+                let payload =
+                    payload_res.as_ref().map_or_else(|e| json!({ "error": e }), |v| v.clone());
                 deps.middleware.after_tool_call(turn_ctx, state, call, ok, &payload).await?;
                 sink.push(AgentEvent::ToolExecuted { run_id, tool_name: call.name.clone(), ok });
                 tool_names.push(call.name.clone());
@@ -189,10 +230,12 @@ pub(crate) async fn execute_engine_command(
             let effect = tool_round_from_calls(&allowed, payloads);
             StatePatch::from(vec![effect]).apply(state);
 
-            sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: StepKind::Tool });
-            emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, false);
+            bump_after_node(state, "dispatch_tools");
 
-            emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
+            sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: StepKind::Tool });
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, false);
+
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
                 graph,
                 thread_id,
@@ -203,7 +246,13 @@ pub(crate) async fn execute_engine_command(
                 commit_metadata::state_commit_after_tools(&tool_names),
             )
             .await?;
-            emit_stage(sink, run_id, state.step_seq, LoopStage::StateCommit, false);
+            crate::loop_common::emit_stage(
+                sink,
+                run_id,
+                state.step_seq,
+                LoopStage::StateCommit,
+                false,
+            );
 
             if finish_turn {
                 Ok(TurnDispatch::Stop)
@@ -213,15 +262,17 @@ pub(crate) async fn execute_engine_command(
         }
         EngineCommand::TextAndMemory { assistant_text, finish_turn } => {
             if let Some(text) = assistant_text {
-                apply_turn_effects(state, vec![TurnEffect::AppendAssistantMessage(text)]);
+                apply_turn_effects(state, &[TurnEffect::AppendAssistantMessage { text }]);
             }
 
-            emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, true);
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, true);
             let _mem = deps.memory.extract_and_commit(state).await?;
             sink.push(AgentEvent::MemoryUpdated);
-            emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, false);
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, false);
 
-            emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
+            bump_after_node(state, "dispatch_text");
+
+            crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
                 graph,
                 thread_id,
@@ -232,7 +283,13 @@ pub(crate) async fn execute_engine_command(
                 commit_metadata::state_commit_after_memory_turn(),
             )
             .await?;
-            emit_stage(sink, run_id, state.step_seq, LoopStage::StateCommit, false);
+            crate::loop_common::emit_stage(
+                sink,
+                run_id,
+                state.step_seq,
+                LoopStage::StateCommit,
+                false,
+            );
 
             if finish_turn {
                 Ok(TurnDispatch::Stop)
@@ -241,4 +298,10 @@ pub(crate) async fn execute_engine_command(
             }
         }
     }
+}
+
+/// Route LLM output via explicit classifier (same semantics as [`EngineCommand::from_llm_output`]).
+#[must_use]
+pub(crate) fn route_llm_output(out: &agent_ports::LlmTurnOutput) -> EngineCommand {
+    classify_llm_routing(out)
 }

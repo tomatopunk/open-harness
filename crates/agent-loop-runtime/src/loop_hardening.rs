@@ -4,7 +4,8 @@
 
 use agent_ports::{ChatMessage, LlmTurnOutput, ThreadState, ToolCallSpec};
 use serde_json::json;
-use std::collections::hash_map::DefaultHasher;
+use serde_json::Value;
+use std::collections::{hash_map::DefaultHasher, BTreeMap};
 use std::hash::{Hash, Hasher};
 
 /// If invocations exist without a matching result row (e.g. interrupted turn), append synthetic error results and tool messages.
@@ -17,12 +18,7 @@ pub(crate) fn repair_missing_tool_results(state: &mut ThreadState) {
         }
     }
     for id in pending {
-        if let Some(inv) = state
-            .tool_invocations
-            .iter()
-            .find(|i| i.invocation_id == id)
-            .cloned()
-        {
+        if let Some(inv) = state.tool_invocations.iter().find(|i| i.invocation_id == id).cloned() {
             state.tool_results.push(agent_ports::ToolResultRecord {
                 invocation_id: id.clone(),
                 tool_name: inv.tool_name.clone(),
@@ -42,11 +38,23 @@ pub(crate) fn repair_missing_tool_results(state: &mut ThreadState) {
 }
 
 #[must_use]
+fn canonical_args_key(args: &Value) -> String {
+    serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Multiset of (tool name, args JSON) — aligns with roadmap / DeerFlow-style loop detection.
+#[must_use]
 fn fingerprint_tool_calls(calls: &[ToolCallSpec]) -> u64 {
-    let mut h = DefaultHasher::new();
+    let mut counts: BTreeMap<(String, String), u32> = BTreeMap::new();
     for c in calls {
-        c.name.hash(&mut h);
-        c.call_id.hash(&mut h);
+        let key = (c.name.clone(), canonical_args_key(&c.args));
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    let mut h = DefaultHasher::new();
+    for (k, n) in counts {
+        k.0.hash(&mut h);
+        k.1.hash(&mut h);
+        n.hash(&mut h);
     }
     h.finish()
 }

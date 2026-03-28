@@ -77,8 +77,10 @@ async fn subagent_plan_respects_concurrency_budget_events() {
     let budget = RunBudget {
         max_turns: 8,
         max_subagent_tasks: 8,
+        subagent_task_cap_per_response: 4,
         max_concurrent_subagents: 2,
         max_concurrent_tool_calls: 8,
+        per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
     };
     let (_final_state, sink) = run_agent_loop(
         &graph,

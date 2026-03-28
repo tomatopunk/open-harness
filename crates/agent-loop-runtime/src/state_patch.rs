@@ -10,7 +10,7 @@ pub struct StatePatch(pub Vec<TurnEffect>);
 impl StatePatch {
     /// Apply all effects in order.
     pub fn apply(self, state: &mut ThreadState) {
-        apply_turn_effects(state, self.0);
+        apply_turn_effects(state, &self.0);
     }
 
     /// Merge another patch after this one (concatenation).

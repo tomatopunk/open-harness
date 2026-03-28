@@ -9,17 +9,19 @@ Per iteration of `run_agent_loop`, the **canonical order** is:
 3. **`AgentLoopMiddleware::before_model`** — runs after messages are built from `ThreadState` + skill preamble; may mutate `messages_for_llm` or `ThreadState`.
 4. **`LoopStage::Model`** — `LLMPort::infer_turn`.
 5. **`LoopStage::PostModel`** — `AgentLoopMiddleware::after_model` only (no checkpoint).
-6. **Dispatch** — `EngineCommand::from_llm_output` (see also `classify_turn_outcome`) → clarify / subagent / tools / text+memory branches, executed by `execution_kernel::execute_engine_command`, each with their own `LoopStage` and `commit_step` as coordinated from `loop_engine.rs`.
+6. **Dispatch** — `classify_llm_routing` / `EngineCommand::from_llm_output` (see also `classify_turn_outcome`) → clarify / subagent / tools / text+memory branches, executed by `dispatch::execute_engine_command`, each with their own `LoopStage` and `commit_step` coordinated from `engine_v2.rs`.  
+   - **Superstep scheduling**: each outer iteration calls `scheduler::begin_outer_superstep`, stages PULL tasks per phase (`prepare_pull_task` for lead / premodel / model / postmodel), and PUSH fan-out tasks for tool batches / subagent plans (`prepare_tool_fanout`, `prepare_subagent_fanout`). Channel bumps + pending write records use `pregel::bump_after_node` after side effects (dispatch branches bump `dispatch_*` nodes).  
+   - **Lead template**: `LeadRuntimeSpec` on `AgentLoopRunConfig` gates lead kernel vs PreModel skill/memory without forking middleware types.
 
 Hosts must not reorder **lead kernel** vs **before_model** without updating this document; doing so breaks parity with DeerFlow’s “lead before model call” semantics.
 
 ## Resume and checkpoints
 
 - **`GraphRuntime::start_run`** writes an initial checkpoint; **`commit_step`** advances `step_seq` and persists `ThreadState` + metadata JSON (see `commit_metadata.rs` keys).
-- **`GraphRuntime::resume_run`** loads the **latest** checkpoint for a `(thread_id, run_id)`. Callers that need a fresh run should allocate a new `run_id` via `start_run`; resuming continues from the last committed snapshot.
+- **`GraphRuntime::resume_run`** loads the **latest** checkpoint for a `(thread_id, run_id)` and applies `CheckpointRecord::engine.pending_state_effects` to `ThreadState` when non-empty (crash-recovery replay). Callers that need a fresh run should allocate a new `run_id` via `start_run`; resuming continues from the last committed snapshot.
 - **`ThreadState::state_schema_version`** (`agent-ports`) must be bumped when serde shape changes; older checkpoints may require an explicit migration path in the host (not implemented in this crate).
 
 ## Budget and errors
 
 - **`RunBudget::max_turns`** — exceeding returns `AgentLoopError::MaxTurnsExceeded` (stable variant for mapping).
-- Subagent plans are **truncated** to `max_subagent_tasks` with a warning log; metadata records `subagent_plan_truncated`.
+- Subagent plans are **truncated** to `min(max_subagent_tasks, subagent_task_cap_per_response)` with a warning log when needed; metadata records `subagent_plan_truncated`.
