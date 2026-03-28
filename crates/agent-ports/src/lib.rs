@@ -8,6 +8,7 @@ pub mod error;
 pub mod events;
 pub mod ids;
 pub mod ports;
+pub mod schema;
 pub mod thread_state;
 pub mod tool_manifest;
 
@@ -20,6 +21,9 @@ pub use ports::{
     MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentMergeContext,
     SubagentPort, SubagentResult, SubtaskPlan, SubtaskSpec, ThreadStatePort, ToolCallSpec,
     ToolPort,
+};
+pub use schema::{
+    AGENT_EVENT_SCHEMA_VERSION, CHECKPOINT_RECORD_SCHEMA_VERSION, THREAD_STATE_SCHEMA_VERSION,
 };
 pub use thread_state::{
     ArtifactRef, ChatMessage, ClarificationState, GovernanceMarks, MemoryCommit, MemoryWorkingSet,

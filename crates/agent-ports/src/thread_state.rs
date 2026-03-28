@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{RunId, StepSeq, ThreadId};
+use crate::schema::THREAD_STATE_SCHEMA_VERSION;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatMessage {
@@ -77,8 +78,11 @@ pub struct GovernanceMarks {
 }
 
 /// Full thread state snapshot (checkpoint payload).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadState {
+    /// Frozen contract version for this snapshot.
+    #[serde(default = "default_thread_state_schema")]
+    pub state_schema_version: u32,
     pub thread_id: ThreadId,
     pub active_run_id: Option<RunId>,
     pub messages: Vec<ChatMessage>,
@@ -95,10 +99,37 @@ pub struct ThreadState {
     pub step_seq: StepSeq,
 }
 
+fn default_thread_state_schema() -> u32 {
+    THREAD_STATE_SCHEMA_VERSION
+}
+
+impl Default for ThreadState {
+    fn default() -> Self {
+        Self {
+            state_schema_version: THREAD_STATE_SCHEMA_VERSION,
+            thread_id: ThreadId::default(),
+            active_run_id: None,
+            messages: Vec::new(),
+            tool_invocations: Vec::new(),
+            tool_results: Vec::new(),
+            todos: Vec::new(),
+            plan_state: PlanState::default(),
+            clarification_state: ClarificationState::default(),
+            memory_working_set: MemoryWorkingSet::default(),
+            memory_commits: Vec::new(),
+            subagent_tasks: Vec::new(),
+            artifacts: Vec::new(),
+            governance_marks: GovernanceMarks::default(),
+            step_seq: StepSeq::default(),
+        }
+    }
+}
+
 impl ThreadState {
     #[must_use]
     pub fn new(thread_id: ThreadId) -> Self {
         Self {
+            state_schema_version: THREAD_STATE_SCHEMA_VERSION,
             thread_id,
             active_run_id: None,
             messages: Vec::new(),

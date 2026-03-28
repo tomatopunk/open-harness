@@ -1,6 +1,7 @@
 //! Unified streaming event protocol for runs.
 
 use crate::ids::{CheckpointId, RunId, StepSeq, ThreadId};
+use crate::schema::AGENT_EVENT_SCHEMA_VERSION;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,9 +36,21 @@ pub enum StepKind {
     Merge,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventSink {
+    #[serde(default = "default_event_schema")]
+    pub event_schema_version: u32,
     pub events: Vec<AgentEvent>,
+}
+
+fn default_event_schema() -> u32 {
+    AGENT_EVENT_SCHEMA_VERSION
+}
+
+impl Default for EventSink {
+    fn default() -> Self {
+        Self { event_schema_version: AGENT_EVENT_SCHEMA_VERSION, events: Vec::new() }
+    }
 }
 
 impl EventSink {

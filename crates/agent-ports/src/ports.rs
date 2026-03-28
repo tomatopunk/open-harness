@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::checkpoint::CheckpointRecord;
 use crate::error::{PortError, PortResult};
-use crate::ids::{RunId, ThreadId};
+use crate::ids::{RunId, StepSeq, ThreadId};
 use crate::thread_state::ThreadState;
 use crate::tool_manifest::{ToolAssemblyPolicy, ToolManifest};
 
@@ -17,6 +17,14 @@ pub struct LlmTurnContext {
     pub messages: Vec<Value>,
     pub system_prompt: Option<String>,
     pub model_name: Option<String>,
+    /// Bound policy version for this run (stable semantics within one execution).
+    pub policy_version: Option<String>,
+    /// When true, bias planning/todo behavior (aligned with lead-agent plan mode).
+    pub is_plan_mode: bool,
+    /// Tool names available after assembly (for structured tool-calling prompts).
+    pub assembled_tool_names: Vec<String>,
+    /// Carried from middleware when the duplicate-message loop detector fires.
+    pub loop_detected: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -148,6 +156,13 @@ pub trait CheckpointPort: Send + Sync {
         &self,
         thread_id: ThreadId,
         run_id: RunId,
+    ) -> PortResult<Option<CheckpointRecord>>;
+    /// Load the checkpoint for an exact step (for step-accurate resume/replay).
+    async fn load_at_step(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+        step_seq: StepSeq,
     ) -> PortResult<Option<CheckpointRecord>>;
 }
 
