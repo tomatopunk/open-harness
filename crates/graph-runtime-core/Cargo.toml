@@ -16,4 +16,5 @@ uuid = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
+agent-adapters = { path = "../agent-adapters" }
 tokio = { workspace = true }
