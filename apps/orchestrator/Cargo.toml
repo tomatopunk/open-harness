@@ -32,3 +32,9 @@ protocol-compat = { path = "../../crates/protocol-compat" }
 runtime-kernel = { path = "../../crates/runtime-kernel" }
 runtime-llm-chain-adapter = { path = "../../crates/runtime-llm-chain-adapter" }
 sandbox-runtime = { path = "../../crates/sandbox-runtime" }
+agent-ports = { path = "../../crates/agent-ports" }
+agent-loop-runtime = { path = "../../crates/agent-loop-runtime" }
+agent-adapters = { path = "../../crates/agent-adapters" }
+graph-runtime-core = { path = "../../crates/graph-runtime-core" }
+governance-plane = { path = "../../crates/governance-plane" }
+tool-runtime = { path = "../../crates/tool-runtime" }
