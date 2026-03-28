@@ -187,7 +187,9 @@ struct OrchestrateRequest {
 }
 
 async fn run_orchestrate_with_state(
-    axum::extract::State(st): axum::extract::State<AppState>,
+    axum::extract::State(AppState { store, governance, graph, agent_deps }): axum::extract::State<
+        AppState,
+    >,
     Json(body): Json<OrchestrateRequest>,
 ) -> Json<serde_json::Value> {
     let pipeline = LeadPipeline::default();
@@ -207,19 +209,17 @@ async fn run_orchestrate_with_state(
     let thread_id = ThreadId::from(thread_uuid);
 
     for fact in &ctx.memory_facts {
-        let _ = st.store.append_fact(thread_uuid, fact).await;
+        let _ = store.append_fact(thread_uuid, fact).await;
     }
 
-    let _ = st
-        .store
+    let _ = store
         .put_skill(&SkillRecord {
             name: "research".to_string(),
             enabled: body.configurable.skills_enabled.unwrap_or(true),
         })
         .await;
 
-    let _ = st
-        .store
+    let _ = store
         .append_tool_record(&ToolRecord {
             thread_id: thread_uuid,
             tool_name: "orchestrate.prepare".to_string(),
@@ -239,8 +239,7 @@ async fn run_orchestrate_with_state(
             Ok(out) => (out.exit_code, out.stdout, out.stderr),
             Err(err) => (-1, String::new(), err.to_string()),
         };
-        let _ = st
-            .store
+        let _ = store
             .append_execution(&SandboxExecution {
                 execution_id: Uuid::new_v4(),
                 thread_id: thread_uuid,
@@ -254,28 +253,33 @@ async fn run_orchestrate_with_state(
         metrics::counter!("open_harness_orchestrator_sandbox_execution_total").increment(1);
     }
 
-    let facts = st.store.list_facts(thread_uuid).await.unwrap_or_default();
-    let tool_records = st.store.list_tool_records(thread_uuid).await.unwrap_or_default();
-    let subagent_records = st.store.list_tasks_by_thread(thread_uuid).await.unwrap_or_default();
-    let sandbox_records = st.store.list_executions(thread_uuid).await.unwrap_or_default();
-    let skills = st.store.list_skills().await.unwrap_or_default();
+    let facts = store.list_facts(thread_uuid).await.unwrap_or_default();
+    let tool_records = store.list_tool_records(thread_uuid).await.unwrap_or_default();
+    let subagent_records = store.list_tasks_by_thread(thread_uuid).await.unwrap_or_default();
+    let sandbox_records = store.list_executions(thread_uuid).await.unwrap_or_default();
+    let skills = store.list_skills().await.unwrap_or_default();
 
     let mut base_state = ThreadState::new(thread_id);
-    base_state.governance_marks.policy_version = Some(st.governance.policy_version.clone());
+    base_state.governance_marks.policy_version = Some(governance.policy_version.clone());
     let budget = RunBudget {
-        max_turns: st.governance.policies.max_turns.max(1),
-        max_subagent_tasks: st.governance.subagents.max_tasks_per_run.max(1),
+        max_turns: governance.policies.max_turns.max(1),
+        max_subagent_tasks: governance.subagents.max_tasks_per_run.max(1),
         subagent_task_cap_per_response: 4,
-        max_concurrent_subagents: st.governance.subagents.max_concurrent.max(1),
+        max_concurrent_subagents: governance.subagents.max_concurrent.max(1),
         max_concurrent_tool_calls: 8,
         per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
     };
-    let tool_cfg = ToolLoopConfig { assembly: st.governance.tool_assembly() };
-    let run_cfg = build_inner_run_config(&ctx, &body, st.governance.as_ref());
+    let tool_cfg = ToolLoopConfig { assembly: governance.tool_assembly() };
+    let run_cfg = build_inner_run_config(&ctx, &body, governance.as_ref());
+
+    // Do not hold `ctx` across `await` (keeps the handler future `Send` for axum).
+    let token_usage_estimate = ctx.token_usage_estimate;
+    let todos = ctx.todos.clone();
+    drop(ctx);
 
     let loop_result = run_agent_loop(
-        st.graph.as_ref(),
-        st.agent_deps.as_ref(),
+        graph,
+        agent_deps,
         thread_id,
         base_state,
         body.messages.clone(),
@@ -291,14 +295,14 @@ async fn run_orchestrate_with_state(
             "thread_id": thread_uuid,
             "runtime_engine": "inner",
             "loop_detected": final_state.governance_marks.tags.iter().any(|t| t == "loop_detected"),
-            "token_usage_estimate": ctx.token_usage_estimate,
-            "todos": ctx.todos,
+            "token_usage_estimate": token_usage_estimate,
+            "todos": todos,
             "memory_facts": facts,
             "skills": skills,
             "tool_records_count": tool_records.len(),
             "subagent_tasks_count": subagent_records.len(),
             "sandbox_executions_count": sandbox_records.len(),
-            "runtime_metadata": inner_runtime_metadata(&final_state, &st.governance.policy_version),
+            "runtime_metadata": inner_runtime_metadata(&final_state, &governance.policy_version),
             "agent_events": sink.events,
             "thread_state": final_state,
             "events": []
