@@ -8,7 +8,8 @@ pub type TurnOutcome = EngineCommand;
 /// Maps model output to a single branch (priority: clarification > subagent > tools > text).
 #[must_use]
 pub fn classify_turn_outcome(out: &agent_ports::LlmTurnOutput) -> EngineCommand {
-    EngineCommand::from_llm_output(out)
+    // 与 `dispatch::route_llm_output` / `classify_llm_routing` 同一入口。
+    agent_ports::classify_llm_routing(out)
 }
 
 #[cfg(test)]

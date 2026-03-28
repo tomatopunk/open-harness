@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Model-tool-state main loop over agent-ports and graph-runtime-core"
 
+[lints]
+workspace = true
+
 [dependencies]
 agent-ports = { path = "../agent-ports" }
 graph-runtime-core = { path = "../graph-runtime-core" }

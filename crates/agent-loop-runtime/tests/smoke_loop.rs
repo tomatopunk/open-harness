@@ -34,8 +34,8 @@ async fn inner_loop_completes_with_echo_tool() {
         state,
         vec![json!("tool: echo")],
         RunBudget::default(),
-        &ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
-        &AgentLoopRunConfig::default(),
+        ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
+        AgentLoopRunConfig::default(),
     )
     .await
     .expect("loop");

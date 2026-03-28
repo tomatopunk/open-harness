@@ -27,7 +27,9 @@ pub fn prepare_subagent_fanout(state: &mut ThreadState, task_count: usize) {
 }
 
 /// Reset staged tasks at the beginning of an outer superstep (one `run_agent_loop` iteration).
+///
+/// Hosts and tests should prefer [`crate::superstep_kernel::prepare_tasks`].
 #[inline]
-pub fn begin_outer_superstep(state: &mut ThreadState) {
+pub(crate) fn begin_outer_superstep(state: &mut ThreadState) {
     state.pregel.staged_tasks.clear();
 }

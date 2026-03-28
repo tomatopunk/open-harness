@@ -45,8 +45,8 @@ async fn inner_loop_emits_loop_stages() {
         state,
         vec![json!("tool: echo")],
         RunBudget::default(),
-        &ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
-        &AgentLoopRunConfig::default(),
+        ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
+        AgentLoopRunConfig::default(),
     )
     .await
     .expect("loop");
@@ -89,8 +89,8 @@ async fn subagent_plan_respects_concurrency_budget_events() {
         state,
         vec![json!("subagent: test goal")],
         budget,
-        &ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
-        &AgentLoopRunConfig::default(),
+        ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
+        AgentLoopRunConfig::default(),
     )
     .await
     .expect("loop");

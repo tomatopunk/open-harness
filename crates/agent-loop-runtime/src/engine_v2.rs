@@ -1,4 +1,4 @@
-//! Pregel-style superstep orchestration over the agent loop (V2 kernel).
+//! Pregel-style superstep orchestration over the agent loop（V2：`superstep_kernel` 三阶段管线）。
 
 use crate::agent_loop_types::{AgentLoopDeps, ToolLoopConfig};
 use crate::budget::RunBudget;
@@ -8,10 +8,10 @@ use crate::lead_kernel::apply_lead_kernel_turn;
 use crate::loop_common::emit_stage;
 use crate::loop_hardening::{apply_repeated_tool_loop_breaker, repair_missing_tool_results};
 use crate::middleware::TurnContext;
-use crate::pregel::bump_after_node;
 use crate::run_config::AgentLoopRunConfig;
-use crate::scheduler::{begin_outer_superstep, prepare_pull_task};
 use crate::state_reducer::{append_user_messages, apply_run_config_bootstrap};
+use crate::superstep_kernel::prepare::prepare_pull_task;
+use crate::superstep_kernel::{apply_writes_after_node, prepare_tasks};
 use agent_ports::{
     AgentEvent, EngineCommand, EventSink, LlmTurnContext, LoopStage, ThreadId, ThreadState,
 };
@@ -27,8 +27,8 @@ pub async fn run_agent_loop(
     mut state: ThreadState,
     user_messages: Vec<Value>,
     budget: RunBudget,
-    tool_cfg: &ToolLoopConfig,
-    run_cfg: &AgentLoopRunConfig,
+    tool_cfg: ToolLoopConfig,
+    run_cfg: AgentLoopRunConfig,
 ) -> AgentLoopResult<(ThreadState, EventSink)> {
     let mut sink = EventSink::default();
     let run = graph
@@ -39,7 +39,7 @@ pub async fn run_agent_loop(
     sink.push(AgentEvent::RunStarted { thread_id, run_id });
 
     append_user_messages(&mut state, &user_messages);
-    apply_run_config_bootstrap(&mut state, run_cfg);
+    apply_run_config_bootstrap(&mut state, &run_cfg);
     state.migrate_to_latest_schema();
 
     let turn_ctx_base = TurnContext { thread_id, run_id, run_cfg: run_cfg.clone(), budget };
@@ -54,14 +54,14 @@ pub async fn run_agent_loop(
 
         let step_seq = state.step_seq;
 
-        begin_outer_superstep(&mut state);
+        prepare_tasks(&mut state);
 
         // --- Node: Lead ---
         prepare_pull_task(&mut state, "lead");
         if run_cfg.lead_spec.apply_lead_kernel {
-            apply_lead_kernel_turn(deps.lead_kernel.as_ref(), &mut state, run_cfg).await?;
+            apply_lead_kernel_turn(deps.lead_kernel.clone(), &mut state, &run_cfg).await?;
         }
-        bump_after_node(&mut state, "lead");
+        apply_writes_after_node(&mut state, "lead");
 
         repair_missing_tool_results(&mut state);
 
@@ -101,11 +101,11 @@ pub async fn run_agent_loop(
             }
         }
         emit_stage(&mut sink, run_id, step_seq, LoopStage::PreModel, false);
-        bump_after_node(&mut state, "premodel");
+        apply_writes_after_node(&mut state, "premodel");
 
         let manifests = deps.tools.assemble(&tool_cfg.assembly);
         let assembled_tool_names: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
-        let mut messages_for_llm = build_llm_messages(&state, &injection.preamble, run_cfg);
+        let mut messages_for_llm = build_llm_messages(&state, &injection.preamble, &run_cfg);
 
         deps.middleware.before_model(&turn_ctx_base, &mut state, &mut messages_for_llm).await?;
 
@@ -132,7 +132,7 @@ pub async fn run_agent_loop(
         emit_stage(&mut sink, run_id, step_seq, LoopStage::PostModel, true);
         deps.middleware.after_model(&turn_ctx_base, &mut state, &out).await?;
         emit_stage(&mut sink, run_id, step_seq, LoopStage::PostModel, false);
-        bump_after_node(&mut state, "postmodel");
+        apply_writes_after_node(&mut state, "postmodel");
 
         apply_repeated_tool_loop_breaker(&mut out, &mut last_tool_call_fingerprint);
 

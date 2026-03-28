@@ -5,13 +5,14 @@
 
 use agent_ports::{ThreadState, TodoItem};
 use runtime_kernel::{MiddlewareContext, RuntimeKernel};
+use std::sync::Arc;
 
 use crate::error::{AgentLoopError, AgentLoopResult};
 use crate::run_config::AgentLoopRunConfig;
 
 /// Run the shared lead kernel on the current transcript and merge results into `state`.
 pub(crate) async fn apply_lead_kernel_turn(
-    kernel: &RuntimeKernel,
+    kernel: Arc<RuntimeKernel>,
     state: &mut ThreadState,
     run_cfg: &AgentLoopRunConfig,
 ) -> AgentLoopResult<()> {
@@ -56,6 +57,7 @@ mod tests {
     use super::*;
     use agent_ports::ThreadId;
     use serde_json::json;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn lead_kernel_merges_loop_tag_and_snippets() {
@@ -69,7 +71,7 @@ mod tests {
             .messages
             .push(agent_ports::ChatMessage { role: "user".into(), content: json!("repeat") });
         let run_cfg = AgentLoopRunConfig::default();
-        apply_lead_kernel_turn(&kernel, &mut state, &run_cfg).await.expect("kernel");
+        apply_lead_kernel_turn(Arc::new(kernel), &mut state, &run_cfg).await.expect("kernel");
         assert!(state.governance_marks.tags.iter().any(|t| t == "loop_detected"));
     }
 }

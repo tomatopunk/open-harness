@@ -5,19 +5,17 @@ use crate::commit_metadata;
 use crate::error::AgentLoopResult;
 use crate::loop_common::commit_at_stage;
 use crate::middleware::TurnContext;
-use crate::pregel::bump_after_node;
-use crate::scheduler::{prepare_subagent_fanout, prepare_tool_fanout};
 use crate::state_patch::StatePatch;
+use crate::superstep_kernel::apply_writes_after_node;
+use crate::superstep_kernel::execute::invoke_tool_calls_in_call_order;
+use crate::superstep_kernel::prepare::{prepare_subagent_fanout, prepare_tool_fanout};
 use crate::turn_reducer::{apply_turn_effects, tool_round_from_calls, TurnEffect};
 use agent_ports::{
-    classify_llm_routing, tool_allowed, AgentEvent, EngineCommand, EventSink, LoopStage, StepKind,
-    SubagentExecuteParams, ThreadId, ToolCallSpec, ToolManifest, ToolPort,
+    tool_allowed, AgentEvent, EngineCommand, EventSink, LoopStage, StepKind, SubagentExecuteParams,
+    ThreadId, ToolCallSpec, ToolManifest,
 };
-use futures::stream::{self, StreamExt};
 use graph_runtime_core::GraphRuntime;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
+use serde_json::json;
 use tracing::warn;
 
 use crate::agent_loop_types::AgentLoopDeps;
@@ -27,44 +25,6 @@ use crate::agent_loop_types::AgentLoopDeps;
 pub(crate) enum TurnDispatch {
     Stop,
     Again,
-}
-
-/// Run parallel tool invokes with bounded fan-out; results are realigned to `calls` order by `call_id`.
-async fn invoke_tools_mapped_to_call_order(
-    tools: Arc<dyn ToolPort>,
-    run_id: agent_ports::RunId,
-    thread_id: ThreadId,
-    calls: &[ToolCallSpec],
-    max_concurrent: usize,
-) -> Vec<Result<Value, String>> {
-    let pairs: Vec<(String, Result<Value, String>)> =
-        stream::iter(calls.iter().cloned().map(|call| {
-            let tools = tools.clone();
-            async move {
-                let id = call.call_id.clone();
-                let res = tools.invoke(run_id, thread_id, &call).await.map_err(|e| e.to_string());
-                (id, res)
-            }
-        }))
-        .buffer_unordered(max_concurrent.max(1))
-        .collect()
-        .await;
-
-    let mut map: HashMap<String, Result<Value, String>> = HashMap::with_capacity(pairs.len());
-    for (id, res) in pairs {
-        if map.insert(id.clone(), res).is_some() {
-            warn!("duplicate tool_call_id in concurrent tool results: {}", id);
-        }
-    }
-
-    calls
-        .iter()
-        .map(|c| {
-            map.remove(&c.call_id).unwrap_or_else(|| {
-                Err(format!("missing tool result for call_id={} name={}", c.call_id, c.name))
-            })
-        })
-        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -92,7 +52,7 @@ pub(crate) async fn execute_engine_command(
                 run_id,
                 prompt: out.clarification_prompt.clone(),
             });
-            bump_after_node(state, "dispatch_clarify");
+            apply_writes_after_node(state, "dispatch_clarify");
             *state = commit_at_stage(
                 graph,
                 thread_id,
@@ -158,7 +118,7 @@ pub(crate) async fn execute_engine_command(
                 .await?;
             apply_turn_effects(state, &[TurnEffect::ReplaceFromMerge { state: Box::new(merged) }]);
 
-            bump_after_node(state, "dispatch_subagent");
+            apply_writes_after_node(state, "dispatch_subagent");
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
@@ -206,7 +166,7 @@ pub(crate) async fn execute_engine_command(
             }
 
             let max_c = budget.max_concurrent_tool_calls.max(1) as usize;
-            let payloads = invoke_tools_mapped_to_call_order(
+            let payloads = invoke_tool_calls_in_call_order(
                 deps.tools.clone(),
                 run_id,
                 thread_id,
@@ -230,7 +190,7 @@ pub(crate) async fn execute_engine_command(
             let effect = tool_round_from_calls(&allowed, payloads);
             StatePatch::from(vec![effect]).apply(state);
 
-            bump_after_node(state, "dispatch_tools");
+            apply_writes_after_node(state, "dispatch_tools");
 
             sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: StepKind::Tool });
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, false);
@@ -270,7 +230,7 @@ pub(crate) async fn execute_engine_command(
             sink.push(AgentEvent::MemoryUpdated);
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, false);
 
-            bump_after_node(state, "dispatch_text");
+            apply_writes_after_node(state, "dispatch_text");
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
@@ -300,8 +260,8 @@ pub(crate) async fn execute_engine_command(
     }
 }
 
-/// Route LLM output via explicit classifier (same semantics as [`EngineCommand::from_llm_output`]).
+/// Route LLM output via the single [`EngineCommand::from_llm_output`] entry (≈ [`classify_llm_routing`]).
 #[must_use]
 pub(crate) fn route_llm_output(out: &agent_ports::LlmTurnOutput) -> EngineCommand {
-    classify_llm_routing(out)
+    EngineCommand::from_llm_output(out)
 }

@@ -101,4 +101,23 @@ mod tests {
         assert_eq!(st.tool_results.len(), 1);
         assert!(!st.tool_results[0].ok);
     }
+
+    #[test]
+    fn repeated_identical_tool_calls_suppressed_on_second_turn() {
+        let calls = vec![agent_ports::ToolCallSpec {
+            name: "echo".into(),
+            args: json!({ "x": 1 }),
+            call_id: "c1".into(),
+        }];
+        let mut out1 = LlmTurnOutput { tool_calls: calls.clone(), ..Default::default() };
+        let mut last_fp: Option<u64> = None;
+        apply_repeated_tool_loop_breaker(&mut out1, &mut last_fp);
+        assert!(!out1.tool_calls.is_empty());
+
+        let mut out2 = LlmTurnOutput { tool_calls: calls.clone(), ..Default::default() };
+        apply_repeated_tool_loop_breaker(&mut out2, &mut last_fp);
+        assert!(out2.tool_calls.is_empty());
+        assert!(out2.finish_turn);
+        assert!(out2.assistant_text.is_some());
+    }
 }

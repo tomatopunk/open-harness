@@ -20,6 +20,7 @@ pub mod runtime_spec;
 mod scheduler;
 pub mod state_patch;
 pub mod state_reducer;
+pub mod superstep_kernel;
 mod turn_flow;
 mod turn_reducer;
 

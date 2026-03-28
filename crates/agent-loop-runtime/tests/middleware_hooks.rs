@@ -110,8 +110,8 @@ async fn middleware_hooks_fire_on_tool_path() {
         state,
         vec![json!("tool: echo")],
         RunBudget::default(),
-        &ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
-        &AgentLoopRunConfig::default(),
+        ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
+        AgentLoopRunConfig::default(),
     )
     .await
     .expect("loop");
