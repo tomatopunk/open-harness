@@ -8,6 +8,7 @@ use agent_ports::ToolAssemblyPolicy;
 use crate::error::{GovernanceError, GovernanceResult};
 use crate::models::ModelsFile;
 use crate::policies::PoliciesFile;
+use crate::skills::SkillsFile;
 use crate::subagents::SubagentsFile;
 use crate::tools::ToolsFile;
 
@@ -16,20 +17,28 @@ pub struct GovernanceBundle {
     pub policy_version: String,
     pub models: ModelsFile,
     pub tools: ToolsFile,
+    pub skills: SkillsFile,
     pub policies: PoliciesFile,
     pub subagents: SubagentsFile,
 }
 
 impl GovernanceBundle {
-    /// Load YAML files from a directory (`models.yaml`, `tools.yaml`, `policies.yaml`, `subagents.yaml`).
+    /// Load YAML files from a directory (`models.yaml`, `tools.yaml`, `skills.yaml`, `policies.yaml`, `subagents.yaml`).
     pub fn load_from_dir(dir: impl AsRef<Path>) -> GovernanceResult<Self> {
         let dir = dir.as_ref();
         let models = read_yaml::<ModelsFile>(&dir.join("models.yaml")).unwrap_or_default();
         let tools = read_yaml::<ToolsFile>(&dir.join("tools.yaml")).unwrap_or_default();
+        let skills = read_yaml::<SkillsFile>(&dir.join("skills.yaml")).unwrap_or_default();
         let policies = read_yaml::<PoliciesFile>(&dir.join("policies.yaml")).unwrap_or_default();
         let subagents = read_yaml::<SubagentsFile>(&dir.join("subagents.yaml")).unwrap_or_default();
         let policy_version = policies.policy_version.clone();
-        Ok(Self { policy_version, models, tools, policies, subagents })
+        Ok(Self { policy_version, models, tools, skills, policies, subagents })
+    }
+
+    /// Skill names that are enabled in governance (for intersecting with request toggles).
+    #[must_use]
+    pub fn enabled_skill_names(&self) -> Vec<String> {
+        self.skills.entries.iter().filter(|e| e.enabled).map(|e| e.name.clone()).collect()
     }
 
     #[must_use]
@@ -52,6 +61,7 @@ impl Default for GovernanceBundle {
             policy_version: "0".into(),
             models: ModelsFile::default(),
             tools: ToolsFile::default(),
+            skills: SkillsFile::default(),
             policies: PoliciesFile::default(),
             subagents: SubagentsFile::default(),
         }

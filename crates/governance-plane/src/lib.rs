@@ -6,8 +6,10 @@ pub mod bundle;
 pub mod error;
 pub mod models;
 pub mod policies;
+pub mod skills;
 pub mod subagents;
 pub mod tools;
 
 pub use bundle::GovernanceBundle;
 pub use error::{GovernanceError, GovernanceResult};
+pub use skills::{SkillEntry, SkillsFile};
