@@ -4,6 +4,8 @@
 //! `agent-adapters`.
 
 pub mod checkpoint;
+pub mod checkpoint_engine;
+pub mod engine_command;
 pub mod error;
 pub mod events;
 pub mod ids;
@@ -13,14 +15,16 @@ pub mod thread_state;
 pub mod tool_manifest;
 
 pub use checkpoint::CheckpointRecord;
+pub use checkpoint_engine::EngineCheckpointExtensions;
+pub use engine_command::EngineCommand;
 pub use error::{PortError, PortResult};
-pub use events::{AgentEvent, EventSink, StepKind};
+pub use events::{AgentEvent, EventSink, LoopStage, StepKind};
 pub use ids::{CheckpointId, RunId, StepSeq, ThreadId};
 pub use ports::{
     tool_allowed, CheckpointPort, LLMPort, LlmTurnContext, LlmTurnOutput, MemoryContext,
-    MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentMergeContext,
-    SubagentPort, SubagentResult, SubtaskPlan, SubtaskSpec, ThreadStatePort, ToolCallSpec,
-    ToolPort,
+    MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentExecuteParams,
+    SubagentMergeContext, SubagentPort, SubagentResult, SubtaskPlan, SubtaskSpec, ThreadStatePort,
+    ToolCallSpec, ToolPort,
 };
 pub use schema::{
     AGENT_EVENT_SCHEMA_VERSION, CHECKPOINT_RECORD_SCHEMA_VERSION, THREAD_STATE_SCHEMA_VERSION,

@@ -126,6 +126,13 @@ impl Default for ThreadState {
 }
 
 impl ThreadState {
+    /// Ensure [`ThreadState::state_schema_version`] matches the crate contract (stub for N−1 migrations).
+    pub fn migrate_to_latest_schema(&mut self) {
+        if self.state_schema_version != THREAD_STATE_SCHEMA_VERSION {
+            self.state_schema_version = THREAD_STATE_SCHEMA_VERSION;
+        }
+    }
+
     #[must_use]
     pub fn new(thread_id: ThreadId) -> Self {
         Self {

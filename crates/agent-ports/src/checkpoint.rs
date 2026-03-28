@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::checkpoint_engine::EngineCheckpointExtensions;
 use crate::ids::{CheckpointId, RunId, StepSeq, ThreadId};
 use crate::schema::CHECKPOINT_RECORD_SCHEMA_VERSION;
 use crate::thread_state::ThreadState;
@@ -17,6 +18,9 @@ pub struct CheckpointRecord {
     pub state: ThreadState,
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// Engine kernel metadata (resume cursor, schema pinning). Distinct from opaque `metadata`.
+    #[serde(default)]
+    pub engine: EngineCheckpointExtensions,
 }
 
 fn default_checkpoint_record_schema() -> u32 {

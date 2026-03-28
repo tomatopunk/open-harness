@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::checkpoint::CheckpointRecord;
 use crate::error::{PortError, PortResult};
@@ -97,6 +98,21 @@ pub struct SubagentResult {
     pub output: Value,
 }
 
+/// Execution limits for subagent plan runs (governance + runtime budget).
+#[derive(Debug, Clone)]
+pub struct SubagentExecuteParams {
+    /// Max tasks executed in parallel per plan.
+    pub max_concurrent: u32,
+    /// Per-task wall-clock limit (None = no timeout).
+    pub per_task_timeout: Option<Duration>,
+}
+
+impl Default for SubagentExecuteParams {
+    fn default() -> Self {
+        Self { max_concurrent: 4, per_task_timeout: Some(Duration::from_secs(120)) }
+    }
+}
+
 #[async_trait]
 pub trait LLMPort: Send + Sync {
     async fn infer_turn(&self, ctx: LlmTurnContext) -> PortResult<LlmTurnOutput>;
@@ -134,12 +150,16 @@ pub trait SkillPort: Send + Sync {
 
 #[async_trait]
 pub trait SubagentPort: Send + Sync {
+    /// Run subtasks. Implementations should respect `params.max_concurrent` and optional timeouts.
+    /// `sink` is used for lifecycle events (`SubagentTaskStarted`, etc.).
     async fn execute_plan(
         &self,
         run_id: RunId,
         thread_id: ThreadId,
         plan: &SubtaskPlan,
         state: &ThreadState,
+        params: &SubagentExecuteParams,
+        sink: &mut crate::events::EventSink,
     ) -> PortResult<Vec<SubagentResult>>;
 
     async fn merge(
