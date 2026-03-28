@@ -10,7 +10,22 @@ use crate::{EngineCommand, LlmTurnOutput};
 #[must_use]
 pub fn classify_llm_routing(out: &LlmTurnOutput) -> EngineCommand {
     let cmd = classify_llm_routing_raw(out);
-    normalize_engine_command(cmd, out)
+    let cmd = normalize_engine_command(cmd, out);
+    debug_assert!(validate_engine_command_invariants(&cmd).is_ok());
+    cmd
+}
+
+/// Invariants expected after [`classify_llm_routing`] (tests and defensive checks).
+pub fn validate_engine_command_invariants(cmd: &EngineCommand) -> Result<(), &'static str> {
+    match cmd {
+        EngineCommand::Subagent { plan, .. } if plan.tasks.is_empty() => {
+            Err("subagent command must not have empty task list after normalization")
+        }
+        EngineCommand::ToolCalls { calls, .. } if calls.is_empty() => {
+            Err("tool command must not have empty calls after normalization")
+        }
+        _ => Ok(()),
+    }
 }
 
 #[must_use]

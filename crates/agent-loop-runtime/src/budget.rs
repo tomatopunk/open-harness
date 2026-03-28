@@ -1,5 +1,6 @@
 //! Unified budgets for subagents and turns (governance-driven).
 
+use agent_ports::SubtaskPlan;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
@@ -26,4 +27,17 @@ impl Default for RunBudget {
             per_subagent_task_timeout: Some(Duration::from_secs(120)),
         }
     }
+}
+
+/// Truncate a subtask plan to governance + per-response caps (deterministic).
+#[must_use]
+pub fn truncate_subtask_plan(plan: SubtaskPlan, budget: &RunBudget) -> (SubtaskPlan, bool) {
+    let max_t = budget.max_subagent_tasks.max(1) as usize;
+    let cap = budget.subagent_task_cap_per_response.max(1) as usize;
+    let effective_cap = max_t.min(cap);
+    let original_len = plan.tasks.len();
+    let truncated_plan =
+        SubtaskPlan { tasks: plan.tasks.into_iter().take(effective_cap).collect() };
+    let truncated = original_len > truncated_plan.tasks.len();
+    (truncated_plan, truncated)
 }

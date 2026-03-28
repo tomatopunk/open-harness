@@ -2215,8 +2215,6 @@ dependencies = [
  "opentelemetry_sdk",
  "orchestrator-core",
  "protocol-compat",
- "runtime-kernel",
- "runtime-llm-chain-adapter",
  "sandbox-runtime",
  "serde",
  "serde_json",

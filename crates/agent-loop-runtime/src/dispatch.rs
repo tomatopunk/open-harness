@@ -15,10 +15,11 @@ use agent_ports::{
     ThreadId, ToolCallSpec, ToolManifest,
 };
 use graph_runtime_core::GraphRuntime;
-use serde_json::json;
+use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::agent_loop_types::AgentLoopDeps;
+use crate::budget::truncate_subtask_plan;
 
 /// Outer loop control after one post-model step completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +68,7 @@ pub(crate) async fn execute_engine_command(
             Ok(TurnDispatch::Stop)
         }
         EngineCommand::Subagent { plan, finish_turn } => {
-            let max_t = budget.max_subagent_tasks.max(1) as usize;
-            let cap = budget.subagent_task_cap_per_response.max(1) as usize;
-            let effective_cap = max_t.min(cap);
-            let original_len = plan.tasks.len();
-            let truncated_plan = agent_ports::SubtaskPlan {
-                tasks: plan.tasks.into_iter().take(effective_cap).collect(),
-            };
-            let truncated = original_len > truncated_plan.tasks.len();
+            let (truncated_plan, truncated) = truncate_subtask_plan(plan, &budget);
             if truncated {
                 warn!("subtask plan truncated by per-response / budget cap");
             }
@@ -149,35 +143,65 @@ pub(crate) async fn execute_engine_command(
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, true);
             sink.push(AgentEvent::StepStarted { run_id, step_seq, kind: StepKind::Tool });
 
-            let mut allowed: Vec<ToolCallSpec> = Vec::new();
-            for call in &calls {
-                if !tool_allowed(&call.name, manifests) {
-                    warn!("tool not in assembled manifest: {}", call.name);
-                    continue;
-                }
-                sink.push(AgentEvent::ToolSelected { run_id, tool_name: call.name.clone() });
-                allowed.push(call.clone());
+            #[derive(Debug)]
+            enum ToolSlot {
+                Denied { reason: String },
+                Invoke { idx: usize },
             }
 
-            prepare_tool_fanout(state, &allowed);
+            let mut invoke_batch: Vec<ToolCallSpec> = Vec::new();
+            let mut slots: Vec<ToolSlot> = Vec::with_capacity(calls.len());
 
-            for call in &allowed {
+            for call in &calls {
+                if !tool_allowed(&call.name, manifests) {
+                    warn!(tool = %call.name, "tool not in assembled manifest; recording structured denial");
+                    slots.push(ToolSlot::Denied {
+                        reason: format!("tool not in assembled manifest: {}", call.name),
+                    });
+                } else {
+                    sink.push(AgentEvent::ToolSelected { run_id, tool_name: call.name.clone() });
+                    let idx = invoke_batch.len();
+                    invoke_batch.push(call.clone());
+                    slots.push(ToolSlot::Invoke { idx });
+                }
+            }
+
+            prepare_tool_fanout(state, &invoke_batch);
+
+            for call in &invoke_batch {
                 deps.middleware.before_tool_call(turn_ctx, state, call).await?;
             }
 
             let max_c = budget.max_concurrent_tool_calls.max(1) as usize;
-            let payloads = invoke_tool_calls_in_call_order(
+            let invoked = invoke_tool_calls_in_call_order(
                 deps.tools.clone(),
                 run_id,
                 thread_id,
-                &allowed,
+                &invoke_batch,
                 max_c,
             )
             .await;
 
-            let mut tool_names: Vec<String> = Vec::with_capacity(allowed.len());
-            for i in 0..allowed.len() {
-                let call = &allowed[i];
+            let mut payloads: Vec<Result<Value, String>> = Vec::with_capacity(calls.len());
+
+            for slot in slots {
+                match slot {
+                    ToolSlot::Denied { reason } => {
+                        payloads.push(Err(reason));
+                    }
+                    ToolSlot::Invoke { idx } => {
+                        payloads.push(
+                            invoked
+                                .get(idx)
+                                .cloned()
+                                .unwrap_or_else(|| Err("internal: missing invoke slot".into())),
+                        );
+                    }
+                }
+            }
+
+            let mut tool_names: Vec<String> = Vec::with_capacity(calls.len());
+            for (i, call) in calls.iter().enumerate() {
                 let payload_res = &payloads[i];
                 let ok = payload_res.is_ok();
                 let payload =
@@ -187,7 +211,7 @@ pub(crate) async fn execute_engine_command(
                 tool_names.push(call.name.clone());
             }
 
-            let effect = tool_round_from_calls(&allowed, payloads);
+            let effect = tool_round_from_calls(&calls, payloads);
             StatePatch::from(vec![effect]).apply(state);
 
             apply_writes_after_node(state, "dispatch_tools");

@@ -29,8 +29,6 @@ config-runtime = { path = "../../crates/config-runtime" }
 state-abstraction = { path = "../../crates/state-abstraction" }
 orchestrator-core = { path = "../../crates/orchestrator-core" }
 protocol-compat = { path = "../../crates/protocol-compat" }
-runtime-kernel = { path = "../../crates/runtime-kernel" }
-runtime-llm-chain-adapter = { path = "../../crates/runtime-llm-chain-adapter" }
 sandbox-runtime = { path = "../../crates/sandbox-runtime" }
 agent-ports = { path = "../../crates/agent-ports" }
 agent-loop-runtime = { path = "../../crates/agent-loop-runtime" }

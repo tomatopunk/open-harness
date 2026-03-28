@@ -1,7 +1,12 @@
 //! P0 契约：超步任务信封顺序、路由单入口、与 `EngineCommand` 对齐。
 
+use agent_loop_runtime::runtime_spec::LeadRuntimeSpec;
 use agent_loop_runtime::superstep_kernel;
-use agent_ports::{classify_llm_routing, EngineCommand, LlmTurnOutput, SubtaskPlan, SubtaskSpec};
+use agent_loop_runtime::{truncate_subtask_plan, RunBudget};
+use agent_ports::{
+    classify_llm_routing, validate_engine_command_invariants, EngineCommand, LlmTurnOutput,
+    SubtaskPlan, SubtaskSpec,
+};
 use agent_ports::{TaskKind, ThreadId, ThreadState, ToolCallSpec};
 use serde_json::json;
 
@@ -9,12 +14,11 @@ use serde_json::json;
 fn golden_staged_pull_sequence_matches_engine_phase_nodes() {
     let mut st = ThreadState::new(ThreadId::new_v4());
     superstep_kernel::prepare_tasks(&mut st);
-    superstep_kernel::prepare::prepare_pull_task(&mut st, "lead");
-    superstep_kernel::prepare::prepare_pull_task(&mut st, "premodel");
-    superstep_kernel::prepare::prepare_pull_task(&mut st, "model");
-    superstep_kernel::prepare::prepare_pull_task(&mut st, "postmodel");
+    for node in LeadRuntimeSpec::main_phase_pull_order() {
+        superstep_kernel::prepare::prepare_pull_task(&mut st, node);
+    }
     assert_eq!(st.pregel.staged_tasks.len(), 4);
-    for (i, expected) in ["lead", "premodel", "model", "postmodel"].iter().enumerate() {
+    for (i, expected) in LeadRuntimeSpec::main_phase_pull_order().iter().enumerate() {
         match &st.pregel.staged_tasks[i].kind {
             TaskKind::Pull { node_id } => assert_eq!(node_id, expected),
             other => panic!("expected Pull at {i}, got {other:?}"),
@@ -36,6 +40,22 @@ fn golden_tool_fanout_stages_push_slots() {
             TaskKind::Push { fanout_id, slot: s } => {
                 assert_eq!(fanout_id, "tool_invoke");
                 assert_eq!(*s, *slot);
+            }
+            other => panic!("expected Push at {i}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn golden_subagent_fanout_stages_push_slots() {
+    let mut st = ThreadState::new(ThreadId::new_v4());
+    superstep_kernel::prepare::prepare_subagent_fanout(&mut st, 3);
+    assert_eq!(st.pregel.staged_tasks.len(), 3);
+    for i in 0..3 {
+        match &st.pregel.staged_tasks[i].kind {
+            TaskKind::Push { fanout_id, slot } => {
+                assert_eq!(fanout_id, "subagent_task");
+                assert_eq!(*slot, i as u32);
             }
             other => panic!("expected Push at {i}, got {other:?}"),
         }
@@ -88,5 +108,69 @@ fn routing_engine_command_matches_classify_llm_routing() {
             format!("{b:?}"),
             "from_llm_output vs classify_llm_routing mismatch"
         );
+        validate_engine_command_invariants(&a).expect("invariants");
     }
+}
+
+/// 四条路径：clarify / subagent / tools / text — 路由结果可枚举且满足不变量。
+#[test]
+fn four_routing_paths_are_distinct_and_valid() {
+    let clarify =
+        classify_llm_routing(&LlmTurnOutput { needs_clarification: true, ..Default::default() });
+    assert!(matches!(clarify, EngineCommand::ClarifyExit));
+    validate_engine_command_invariants(&clarify).expect("clarify invariants");
+
+    let sub = classify_llm_routing(&LlmTurnOutput {
+        subtask_plan: Some(SubtaskPlan {
+            tasks: vec![SubtaskSpec { goal: "do".into(), input: json!({}), budget_steps: 2 }],
+        }),
+        ..Default::default()
+    });
+    assert!(matches!(sub, EngineCommand::Subagent { .. }));
+    validate_engine_command_invariants(&sub).expect("subagent invariants");
+
+    let tools = classify_llm_routing(&LlmTurnOutput {
+        tool_calls: vec![ToolCallSpec {
+            name: "echo".into(),
+            args: json!({}),
+            call_id: "x".into(),
+        }],
+        ..Default::default()
+    });
+    assert!(matches!(tools, EngineCommand::ToolCalls { .. }));
+    validate_engine_command_invariants(&tools).expect("tools invariants");
+
+    let text = classify_llm_routing(&LlmTurnOutput {
+        assistant_text: Some("ok".into()),
+        ..Default::default()
+    });
+    assert!(matches!(text, EngineCommand::TextAndMemory { .. }));
+    validate_engine_command_invariants(&text).expect("text invariants");
+}
+
+#[test]
+fn subtask_truncation_respects_effective_cap() {
+    let budget = RunBudget {
+        max_subagent_tasks: 2,
+        subagent_task_cap_per_response: 10,
+        ..RunBudget::default()
+    };
+    let plan = SubtaskPlan {
+        tasks: vec![
+            SubtaskSpec { goal: "a".into(), input: json!({}), budget_steps: 1 },
+            SubtaskSpec { goal: "b".into(), input: json!({}), budget_steps: 1 },
+            SubtaskSpec { goal: "c".into(), input: json!({}), budget_steps: 1 },
+        ],
+    };
+    let (trunc, was_trunc) = truncate_subtask_plan(plan, &budget);
+    assert!(was_trunc);
+    assert_eq!(trunc.tasks.len(), 2);
+}
+
+#[test]
+fn lead_runtime_phase_order_contract_stable() {
+    assert_eq!(
+        LeadRuntimeSpec::main_phase_pull_order(),
+        &["lead", "premodel", "model", "postmodel"]
+    );
 }

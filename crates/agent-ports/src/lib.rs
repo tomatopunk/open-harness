@@ -23,7 +23,7 @@ pub use engine_command::EngineCommand;
 pub use error::{PortError, PortResult};
 pub use events::{AgentEvent, EventSink, LoopStage, StepKind};
 pub use ids::{CheckpointId, RunId, StepSeq, ThreadId};
-pub use llm_routing::classify_llm_routing;
+pub use llm_routing::{classify_llm_routing, validate_engine_command_invariants};
 pub use ports::{
     tool_allowed, CheckpointPort, LLMPort, LlmTurnContext, LlmTurnOutput, MemoryContext,
     MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentExecuteParams,

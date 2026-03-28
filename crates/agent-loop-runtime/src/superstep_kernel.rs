@@ -43,7 +43,8 @@ pub mod execute {
         max_concurrent: usize,
     ) -> Vec<Result<Value, String>> {
         let pairs: Vec<(String, Result<Value, String>)> =
-            stream::iter(calls.iter().cloned().map(|call| {
+            stream::iter(calls.iter().map(|call| {
+                let call = call.clone();
                 let tools = tools.clone();
                 async move {
                     let id = call.call_id.clone();

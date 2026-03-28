@@ -5,11 +5,8 @@ use graph_runtime_core::GraphRuntime;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
-use runtime_llm_chain_adapter::{
-    LlmChainAdapter, RuntimeRunMetadata, RUNTIME_OUTPUT_SCHEMA_VERSION,
-};
 use sandbox_runtime::{LocalSandbox, Sandbox, SandboxRequest};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use state_abstraction::{
     CheckpointStore, DynCheckpointStorePort, LocalFsLayout, LocalFsStateStore, MemoryStore,
@@ -33,14 +30,29 @@ use agent_ports::{LLMPort, ThreadId, ThreadState, TodoItem, ToolPort};
 use orchestrator_core::middleware::MiddlewareContext;
 use tool_runtime::ToolRegistry;
 
+/// Frozen JSON schema version for orchestrator `runtime_metadata` (bump on breaking field changes).
+const RUNTIME_OUTPUT_SCHEMA_VERSION: u32 = 1;
+
+/// Deterministic metadata emitted alongside agent loop runs (single-track inner engine).
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeRunMetadata {
+    schema_version: u32,
+    engine: String,
+    loop_detected: bool,
+    token_usage_estimate: usize,
+    tool_calls: usize,
+    blocked_tools: Vec<String>,
+    warnings: Vec<String>,
+    todos_count: usize,
+    memory_facts_count: usize,
+}
+
 #[derive(Clone)]
 struct AppState {
     store: Arc<LocalFsStateStore>,
     governance: Arc<GovernanceBundle>,
     graph: Arc<GraphRuntime>,
     agent_deps: Arc<AgentLoopDeps>,
-    runtime_engine: String,
-    llm_chain: Arc<LlmChainAdapter>,
 }
 
 fn build_agent_loop_deps(
@@ -261,68 +273,41 @@ async fn run_orchestrate_with_state(
     let tool_cfg = ToolLoopConfig { assembly: st.governance.tool_assembly() };
     let run_cfg = build_inner_run_config(&ctx, &body, st.governance.as_ref());
 
-    if st.runtime_engine == "llm-chain" {
-        match st.llm_chain.run_with_output(body.configurable.clone(), body.messages.clone()).await {
-            Ok(out) => Json(json!({
-                "ok": true,
-                "thread_id": thread_uuid,
-                "runtime_engine": "llm-chain",
-                "loop_detected": ctx.loop_detected,
-                "token_usage_estimate": ctx.token_usage_estimate,
-                "todos": ctx.todos,
-                "memory_facts": facts,
-                "skills": skills,
-                "tool_records_count": tool_records.len(),
-                "subagent_tasks_count": subagent_records.len(),
-                "sandbox_executions_count": sandbox_records.len(),
-                "runtime_metadata": out.metadata,
-                "agent_events": [],
-                "thread_state": base_state,
-                "events": out.events,
-            })),
-            Err(e) => Json(json!({
-                "ok": false,
-                "error": e.to_string(),
-                "thread_id": thread_uuid,
-            })),
-        }
-    } else {
-        let loop_result = run_agent_loop(
-            st.graph.as_ref(),
-            st.agent_deps.as_ref(),
-            thread_id,
-            base_state,
-            body.messages.clone(),
-            budget,
-            tool_cfg,
-            run_cfg,
-        )
-        .await;
+    let loop_result = run_agent_loop(
+        st.graph.as_ref(),
+        st.agent_deps.as_ref(),
+        thread_id,
+        base_state,
+        body.messages.clone(),
+        budget,
+        tool_cfg,
+        run_cfg,
+    )
+    .await;
 
-        match loop_result {
-            Ok((final_state, sink)) => Json(json!({
-                "ok": true,
-                "thread_id": thread_uuid,
-                "runtime_engine": "inner",
-                "loop_detected": final_state.governance_marks.tags.iter().any(|t| t == "loop_detected"),
-                "token_usage_estimate": ctx.token_usage_estimate,
-                "todos": ctx.todos,
-                "memory_facts": facts,
-                "skills": skills,
-                "tool_records_count": tool_records.len(),
-                "subagent_tasks_count": subagent_records.len(),
-                "sandbox_executions_count": sandbox_records.len(),
-                "runtime_metadata": inner_runtime_metadata(&final_state, &st.governance.policy_version),
-                "agent_events": sink.events,
-                "thread_state": final_state,
-                "events": []
-            })),
-            Err(e) => Json(json!({
-                "ok": false,
-                "error": e.to_string(),
-                "thread_id": thread_uuid,
-            })),
-        }
+    match loop_result {
+        Ok((final_state, sink)) => Json(json!({
+            "ok": true,
+            "thread_id": thread_uuid,
+            "runtime_engine": "inner",
+            "loop_detected": final_state.governance_marks.tags.iter().any(|t| t == "loop_detected"),
+            "token_usage_estimate": ctx.token_usage_estimate,
+            "todos": ctx.todos,
+            "memory_facts": facts,
+            "skills": skills,
+            "tool_records_count": tool_records.len(),
+            "subagent_tasks_count": subagent_records.len(),
+            "sandbox_executions_count": sandbox_records.len(),
+            "runtime_metadata": inner_runtime_metadata(&final_state, &st.governance.policy_version),
+            "agent_events": sink.events,
+            "thread_state": final_state,
+            "events": []
+        })),
+        Err(e) => Json(json!({
+            "ok": false,
+            "error": e.to_string(),
+            "thread_id": thread_uuid,
+        })),
     }
 }
 
@@ -363,15 +348,7 @@ async fn main() -> anyhow::Result<()> {
     let checkpoint_store: Arc<dyn CheckpointStore> = store.clone();
     let checkpoint_port = Arc::new(DynCheckpointStorePort::new(checkpoint_store));
     let graph = Arc::new(GraphRuntime::new(checkpoint_port));
-    let runtime_engine = cfg.runtime.engine.clone();
-    let app_state = AppState {
-        store,
-        governance,
-        graph,
-        agent_deps,
-        runtime_engine,
-        llm_chain: Arc::new(LlmChainAdapter::default()),
-    };
+    let app_state = AppState { store, governance, graph, agent_deps };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -402,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = "0.0.0.0:8083".parse()?;
     tracing::info!(
         %addr,
-        engine = %cfg.runtime.engine,
+        engine = "inner",
         governance_root = %cfg.runtime.governance_root,
         "open-harness-orchestrator listening"
     );

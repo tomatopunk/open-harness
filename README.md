@@ -55,7 +55,7 @@ Env overrides (nested with `__`):
 - `OPEN_HARNESS_MANAGE__THREADS_ROOT` — local thread dirs (default `.deer-flow/threads`)
 - `OPEN_HARNESS_CHANNEL__GATEWAY_URL` — channel service callback target (default `http://127.0.0.1:8080`)
 - `OPEN_HARNESS_CHANNELS__ENABLED` — enabled IM channels list (defaults to `dingtalk,wecom` in config)
-- `OPEN_HARNESS_RUNTIME__ENGINE` — orchestrator runtime (`inner` = model-tool-state loop, `llm-chain` = legacy adapter)
+- `OPEN_HARNESS_RUNTIME__ENGINE` — reserved; orchestrator **only** runs the inner model-tool-state loop (`agent-loop-runtime`)
 - `OPEN_HARNESS_RUNTIME__GOVERNANCE_ROOT` — directory with governance YAML (`models.yaml`, `tools.yaml`, `policies.yaml`, `subagents.yaml`)
 - `OPEN_HARNESS_CONFIG_PATH` — override config yaml path
 

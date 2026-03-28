@@ -21,11 +21,12 @@ mod scheduler;
 pub mod state_patch;
 pub mod state_reducer;
 pub mod superstep_kernel;
+mod superstep_turn;
 mod turn_flow;
 mod turn_reducer;
 
 pub use agent_ports::EngineCommand;
-pub use budget::RunBudget;
+pub use budget::{truncate_subtask_plan, RunBudget};
 pub use error::{AgentLoopError, AgentLoopResult};
 pub use loop_engine::{run_agent_loop, AgentLoopDeps, ToolLoopConfig};
 pub use middleware::{AgentLoopMiddleware, MiddlewareChain, NoopMiddleware, TurnContext};
