@@ -2,8 +2,10 @@ use agent_adapters::{
     default_echo_manifests, DefaultMemoryAdapter, DefaultSkillAdapter, DefaultSubagentAdapter,
     EchoTool, HeuristicLlmAdapter, MemoryCheckpointAdapter, RegistryToolAdapter,
 };
-use agent_loop_runtime::{run_agent_loop, AgentLoopDeps, RunBudget, ToolLoopConfig};
-use agent_ports::{ThreadId, ThreadState, ToolAssemblyPolicy};
+use agent_loop_runtime::{
+    run_agent_loop, AgentLoopDeps, AgentLoopRunConfig, RunBudget, ToolLoopConfig,
+};
+use agent_ports::{CheckpointPort, ThreadId, ThreadState, ToolAssemblyPolicy};
 use graph_runtime_core::GraphRuntime;
 use serde_json::json;
 use std::sync::Arc;
@@ -20,9 +22,9 @@ async fn inner_loop_completes_with_echo_tool() {
         memory: Arc::new(DefaultMemoryAdapter),
         skills: Arc::new(DefaultSkillAdapter::default()),
         subagents: Arc::new(DefaultSubagentAdapter::default()),
-        checkpoints: Arc::new(MemoryCheckpointAdapter::default()),
     };
-    let graph = GraphRuntime::new();
+    let cp: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
+    let graph = GraphRuntime::new(cp);
     let tid = ThreadId::new_v4();
     let state = ThreadState::new(tid);
     let (final_state, sink) = run_agent_loop(
@@ -33,6 +35,7 @@ async fn inner_loop_completes_with_echo_tool() {
         vec![json!("tool: echo")],
         RunBudget::default(),
         &ToolLoopConfig { assembly: ToolAssemblyPolicy::default() },
+        &AgentLoopRunConfig::default(),
     )
     .await
     .expect("loop");

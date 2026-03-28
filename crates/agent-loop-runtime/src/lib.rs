@@ -3,7 +3,9 @@
 pub mod budget;
 pub mod error;
 pub mod loop_engine;
+pub mod run_config;
 
 pub use budget::RunBudget;
 pub use error::{AgentLoopError, AgentLoopResult};
 pub use loop_engine::{run_agent_loop, AgentLoopDeps, ToolLoopConfig};
+pub use run_config::AgentLoopRunConfig;

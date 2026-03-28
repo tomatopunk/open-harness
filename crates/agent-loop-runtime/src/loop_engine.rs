@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use crate::budget::RunBudget;
 use crate::error::{AgentLoopError, AgentLoopResult};
+use crate::run_config::AgentLoopRunConfig;
 use agent_ports::{
-    tool_allowed, AgentEvent, CheckpointPort, EventSink, LLMPort, LlmTurnContext, MemoryPort,
-    SkillPort, StepKind, SubagentPort, ThreadId, ThreadState, ToolAssemblyPolicy, ToolPort,
+    tool_allowed, AgentEvent, EventSink, LLMPort, LlmTurnContext, MemoryPort, SkillPort, StepKind,
+    SubagentPort, ThreadId, ThreadState, ToolAssemblyPolicy, ToolPort,
 };
 use graph_runtime_core::GraphRuntime;
 use serde_json::{json, Value};
@@ -19,7 +20,6 @@ pub struct AgentLoopDeps {
     pub memory: Arc<dyn MemoryPort>,
     pub skills: Arc<dyn SkillPort>,
     pub subagents: Arc<dyn SubagentPort>,
-    pub checkpoints: Arc<dyn CheckpointPort>,
 }
 
 /// Configuration for dynamic tool assembly (from governance).
@@ -37,16 +37,31 @@ pub async fn run_agent_loop(
     user_messages: Vec<Value>,
     budget: RunBudget,
     tool_cfg: &ToolLoopConfig,
+    run_cfg: &AgentLoopRunConfig,
 ) -> AgentLoopResult<(ThreadState, EventSink)> {
     let mut sink = EventSink::default();
     let run = graph
         .start_run(thread_id, state.clone())
+        .await
         .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
     let run_id = run.run_id;
     sink.push(AgentEvent::RunStarted { thread_id, run_id });
 
     for msg in &user_messages {
         state.messages.push(agent_ports::ChatMessage { role: "user".into(), content: msg.clone() });
+    }
+
+    if !run_cfg.policy_version.is_empty() {
+        state.governance_marks.policy_version = Some(run_cfg.policy_version.clone());
+    }
+    if run_cfg.loop_detected {
+        state.governance_marks.tags.push("loop_detected".into());
+    }
+    for t in &run_cfg.seed_todos {
+        state.todos.push(t.clone());
+    }
+    if run_cfg.is_plan_mode {
+        state.plan_state.active = true;
     }
 
     let mut turns: u32 = 0;
@@ -59,9 +74,14 @@ pub async fn run_agent_loop(
         let step_seq = state.step_seq;
         sink.push(AgentEvent::StepStarted { run_id, step_seq, kind: StepKind::Llm });
 
+        let skill_names = if run_cfg.skills_globally_enabled {
+            run_cfg.enabled_skill_names.clone()
+        } else {
+            Vec::new()
+        };
         let injection = deps
             .skills
-            .inject(&agent_ports::SkillContext { thread_id, enabled_skill_names: Vec::new() })
+            .inject(&agent_ports::SkillContext { thread_id, enabled_skill_names: skill_names })
             .await?;
         if !injection.resolved_names.is_empty() {
             sink.push(AgentEvent::SkillInjected { skill_names: injection.resolved_names.clone() });
@@ -82,7 +102,8 @@ pub async fn run_agent_loop(
         }
 
         let manifests = deps.tools.assemble(&tool_cfg.assembly);
-        let messages_for_llm = build_llm_messages(&state, &injection.preamble);
+        let assembled_tool_names: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
+        let messages_for_llm = build_llm_messages(&state, &injection.preamble, run_cfg);
 
         let out = deps
             .llm
@@ -91,7 +112,11 @@ pub async fn run_agent_loop(
                 thread_id,
                 messages: messages_for_llm,
                 system_prompt: Some(injection.preamble),
-                model_name: None,
+                model_name: run_cfg.model_name.clone(),
+                policy_version: Some(run_cfg.policy_version.clone()).filter(|s| !s.is_empty()),
+                is_plan_mode: run_cfg.is_plan_mode,
+                assembled_tool_names,
+                loop_detected: run_cfg.loop_detected,
             })
             .await?;
 
@@ -105,36 +130,33 @@ pub async fn run_agent_loop(
                 run_id,
                 prompt: out.clarification_prompt.clone(),
             });
-            graph
-                .commit_step(thread_id, run_id, state.clone())
+            let (committed_seq, committed) = graph
+                .commit_step(thread_id, run_id, state.clone(), json!({ "reason": "clarification" }))
+                .await
                 .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
-            let cp = agent_ports::CheckpointRecord {
-                id: agent_ports::CheckpointId::new_v4(),
-                thread_id,
-                run_id,
-                step_seq: state.step_seq,
-                state: state.clone(),
-                metadata: json!({"reason": "clarification"}),
-            };
-            deps.checkpoints.save(cp).await?;
+            state = committed;
+            sink.push(AgentEvent::StateCommitted { run_id, step_seq: committed_seq });
             sink.push(AgentEvent::RunCompleted { run_id, reason: "clarification".into() });
             return Ok((state, sink));
         }
 
         if let Some(plan) = &out.subtask_plan {
-            if plan.tasks.len() > budget.max_subagent_tasks as usize {
+            let max_t = budget.max_subagent_tasks as usize;
+            let truncated: agent_ports::SubtaskPlan = if plan.tasks.len() > max_t {
                 warn!("subtask plan truncated by budget");
-            }
-            sink.push(AgentEvent::SubagentPlanned {
-                run_id,
-                task_count: plan.tasks.len().min(budget.max_subagent_tasks as usize),
-            });
-            let results = deps.subagents.execute_plan(run_id, thread_id, plan, &state).await?;
-            for r in &results {
+                agent_ports::SubtaskPlan { tasks: plan.tasks.iter().take(max_t).cloned().collect() }
+            } else {
+                plan.clone()
+            };
+            sink.push(AgentEvent::SubagentPlanned { run_id, task_count: truncated.tasks.len() });
+            let results =
+                deps.subagents.execute_plan(run_id, thread_id, &truncated, &state).await?;
+            for (i, r) in results.iter().enumerate() {
                 sink.push(AgentEvent::SubagentCompleted { run_id, task_id: r.task_id });
+                let goal = truncated.tasks.get(i).map(|t| t.goal.clone()).unwrap_or_default();
                 state.subagent_tasks.push(agent_ports::SubagentTaskRecord {
                     task_id: r.task_id,
-                    goal: plan.tasks.first().map(|t| t.goal.clone()).unwrap_or_default(),
+                    goal,
                     status: if r.ok { "ok".into() } else { "failed".into() },
                     output: Some(r.output.clone()),
                 });
@@ -147,10 +169,12 @@ pub async fn run_agent_loop(
                 )
                 .await?;
             state = merged;
-            graph
-                .commit_step(thread_id, run_id, state.clone())
+            let (committed_seq, committed) = graph
+                .commit_step(thread_id, run_id, state, serde_json::json!({}))
+                .await
                 .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
-            sink.push(AgentEvent::StateCommitted { run_id, step_seq: state.step_seq });
+            state = committed;
+            sink.push(AgentEvent::StateCommitted { run_id, step_seq: committed_seq });
             if out.finish_turn {
                 break;
             }
@@ -177,13 +201,23 @@ pub async fn run_agent_loop(
                     invocation_id: call.call_id.clone(),
                     tool_name: call.name.clone(),
                     ok,
-                    payload,
+                    payload: payload.clone(),
+                });
+                state.messages.push(agent_ports::ChatMessage {
+                    role: "tool".into(),
+                    content: json!({
+                        "tool_call_id": call.call_id,
+                        "name": call.name,
+                        "content": payload
+                    }),
                 });
             }
-            graph
-                .commit_step(thread_id, run_id, state.clone())
+            let (committed_seq, committed) = graph
+                .commit_step(thread_id, run_id, state, serde_json::json!({}))
+                .await
                 .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
-            sink.push(AgentEvent::StateCommitted { run_id, step_seq: state.step_seq });
+            state = committed;
+            sink.push(AgentEvent::StateCommitted { run_id, step_seq: committed_seq });
             if out.finish_turn {
                 break;
             }
@@ -200,40 +234,46 @@ pub async fn run_agent_loop(
         let _mem = deps.memory.extract_and_commit(&mut state).await?;
         sink.push(AgentEvent::MemoryUpdated);
 
-        graph
-            .commit_step(thread_id, run_id, state.clone())
+        let (committed_seq, committed) = graph
+            .commit_step(thread_id, run_id, state, serde_json::json!({}))
+            .await
             .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
-        sink.push(AgentEvent::StateCommitted { run_id, step_seq: state.step_seq });
+        state = committed;
+        sink.push(AgentEvent::StateCommitted { run_id, step_seq: committed_seq });
 
         if out.finish_turn {
             break;
         }
     }
 
-    let cp = agent_ports::CheckpointRecord {
-        id: agent_ports::CheckpointId::new_v4(),
-        thread_id,
-        run_id,
-        step_seq: state.step_seq,
-        state: state.clone(),
-        metadata: json!({}),
-    };
-    deps.checkpoints.save(cp).await?;
-
-    let _ = graph
-        .complete_run(thread_id, run_id, state.clone(), "completed")
+    let (_handle, state) = graph
+        .complete_run(thread_id, run_id, state, "completed")
+        .await
         .map_err(|e| AgentLoopError::Graph(e.to_string()))?;
     sink.push(AgentEvent::RunCompleted { run_id, reason: "completed".into() });
 
     Ok((state, sink))
 }
 
-fn build_llm_messages(state: &ThreadState, preamble: &str) -> Vec<Value> {
+fn build_llm_messages(
+    state: &ThreadState,
+    preamble: &str,
+    run_cfg: &AgentLoopRunConfig,
+) -> Vec<Value> {
     let mut out = Vec::new();
+    let mut system = String::new();
     if !preamble.is_empty() {
+        system.push_str(preamble);
+    }
+    if run_cfg.is_plan_mode && !system.is_empty() {
+        system.push_str("\nPlan mode: maintain an explicit todo list and complete steps in order.");
+    } else if run_cfg.is_plan_mode {
+        system.push_str("Plan mode: maintain an explicit todo list and complete steps in order.");
+    }
+    if !system.is_empty() {
         out.push(json!({
             "role": "system",
-            "content": preamble
+            "content": system
         }));
     }
     for m in &state.messages {
