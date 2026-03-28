@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::ids::{RunId, StepSeq, ThreadId};
 use crate::schema::THREAD_STATE_SCHEMA_VERSION;
+use crate::task::TaskEnvelope;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatMessage {
@@ -77,6 +79,51 @@ pub struct GovernanceMarks {
     pub tags: Vec<String>,
 }
 
+/// One durable write applied to a logical channel during `apply_writes` (BSP).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingWriteRecord {
+    pub channel: String,
+    pub version: u64,
+    pub node_id: String,
+}
+
+/// Pregel-style channel versions for scheduling / resume (LangGraph-inspired).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PregelMeta {
+    /// Monotonic version per logical channel name (e.g. `"state"`).
+    #[serde(default)]
+    pub channel_versions: HashMap<String, u64>,
+    /// `node_id` → channel → last seen version after that node ran.
+    #[serde(default)]
+    pub versions_seen: HashMap<String, HashMap<String, u64>>,
+    /// Superstep counter within the current run (incremented on durable commits).
+    #[serde(default)]
+    pub superstep_seq: u64,
+    /// Tasks prepared for the current superstep (PULL/PUSH); cleared after `apply_writes` phases.
+    #[serde(default)]
+    pub staged_tasks: Vec<TaskEnvelope>,
+    /// Writes staged in the current execute phase; consumed when bumping channel after a node.
+    #[serde(default)]
+    pub pending_write_queue: Vec<PendingWriteRecord>,
+}
+
+impl PregelMeta {
+    /// Bump `channel` and return the new version.
+    pub fn bump_channel(&mut self, channel: &str) -> u64 {
+        let v = self.channel_versions.entry(channel.to_string()).or_insert(0);
+        *v = v.saturating_add(1);
+        *v
+    }
+
+    /// Record that `node_id` observed `channel` at `version`.
+    pub fn mark_node_seen(&mut self, node_id: &str, channel: &str, version: u64) {
+        self.versions_seen
+            .entry(node_id.to_string())
+            .or_default()
+            .insert(channel.to_string(), version);
+    }
+}
+
 /// Full thread state snapshot (checkpoint payload).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadState {
@@ -97,6 +144,9 @@ pub struct ThreadState {
     pub artifacts: Vec<ArtifactRef>,
     pub governance_marks: GovernanceMarks,
     pub step_seq: StepSeq,
+    /// Pregel scheduling metadata (V2 engine).
+    #[serde(default)]
+    pub pregel: PregelMeta,
 }
 
 fn default_thread_state_schema() -> u32 {
@@ -121,6 +171,7 @@ impl Default for ThreadState {
             artifacts: Vec::new(),
             governance_marks: GovernanceMarks::default(),
             step_seq: StepSeq::default(),
+            pregel: PregelMeta::default(),
         }
     }
 }
@@ -151,6 +202,7 @@ impl ThreadState {
             artifacts: Vec::new(),
             governance_marks: GovernanceMarks::default(),
             step_seq: StepSeq::initial(),
+            pregel: PregelMeta::default(),
         }
     }
 }

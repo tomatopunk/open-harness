@@ -15,31 +15,13 @@ pub enum EngineCommand {
     /// Run tool calls (possibly parallelized by runtime), then optional `finish_turn`.
     ToolCalls { calls: Vec<ToolCallSpec>, finish_turn: bool },
     /// Append assistant text, memory commit, then optional `finish_turn`.
-    TextAndMemory {
-        assistant_text: Option<String>,
-        finish_turn: bool,
-    },
+    TextAndMemory { assistant_text: Option<String>, finish_turn: bool },
 }
 
 impl EngineCommand {
-    /// Classify model output into exactly one command (table-driven router).
+    /// Classify model output into exactly one command (explicit router; see [`crate::llm_routing`]).
     #[must_use]
     pub fn from_llm_output(out: &LlmTurnOutput) -> Self {
-        if out.needs_clarification {
-            return Self::ClarifyExit;
-        }
-        if let Some(plan) = &out.subtask_plan {
-            return Self::Subagent { plan: plan.clone(), finish_turn: out.finish_turn };
-        }
-        if !out.tool_calls.is_empty() {
-            return Self::ToolCalls {
-                calls: out.tool_calls.clone(),
-                finish_turn: out.finish_turn,
-            };
-        }
-        Self::TextAndMemory {
-            assistant_text: out.assistant_text.clone(),
-            finish_turn: out.finish_turn,
-        }
+        crate::llm_routing::classify_llm_routing(out)
     }
 }

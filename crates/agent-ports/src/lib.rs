@@ -9,8 +9,11 @@ pub mod engine_command;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod llm_routing;
 pub mod ports;
 pub mod schema;
+pub mod state_effect;
+pub mod task;
 pub mod thread_state;
 pub mod tool_manifest;
 
@@ -20,6 +23,7 @@ pub use engine_command::EngineCommand;
 pub use error::{PortError, PortResult};
 pub use events::{AgentEvent, EventSink, LoopStage, StepKind};
 pub use ids::{CheckpointId, RunId, StepSeq, ThreadId};
+pub use llm_routing::classify_llm_routing;
 pub use ports::{
     tool_allowed, CheckpointPort, LLMPort, LlmTurnContext, LlmTurnOutput, MemoryContext,
     MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentExecuteParams,
@@ -29,8 +33,11 @@ pub use ports::{
 pub use schema::{
     AGENT_EVENT_SCHEMA_VERSION, CHECKPOINT_RECORD_SCHEMA_VERSION, THREAD_STATE_SCHEMA_VERSION,
 };
+pub use state_effect::{apply_state_effects, tool_round_from_calls, StateEffect};
+pub use task::{TaskEnvelope, TaskKind};
 pub use thread_state::{
     ArtifactRef, ChatMessage, ClarificationState, GovernanceMarks, MemoryCommit, MemoryWorkingSet,
-    PlanState, SubagentTaskRecord, ThreadState, TodoItem, ToolInvocationRecord, ToolResultRecord,
+    PendingWriteRecord, PlanState, PregelMeta, SubagentTaskRecord, ThreadState, TodoItem,
+    ToolInvocationRecord, ToolResultRecord,
 };
 pub use tool_manifest::{RiskLevel, SideEffectClass, ToolAssemblyPolicy, ToolManifest};
