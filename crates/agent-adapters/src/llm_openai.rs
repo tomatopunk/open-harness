@@ -94,8 +94,11 @@ impl LLMPort for OpenAiChatLlmAdapter {
             );
         }
 
+        let model_id =
+            ctx.model_name.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&self.model);
+
         let mut req = CreateChatCompletionRequestArgs::default();
-        req.model(&self.model).messages(messages);
+        req.model(model_id).messages(messages);
 
         if !ctx.assembled_tool_names.is_empty() {
             let tools: Vec<ChatCompletionTool> = ctx

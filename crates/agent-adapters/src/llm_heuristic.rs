@@ -38,7 +38,8 @@ impl LLMPort for HeuristicLlmAdapter {
                 }),
                 needs_clarification: false,
                 clarification_prompt: None,
-                finish_turn: false,
+                // One plan per model turn; avoid re-entrancy on the same user keyword next turn.
+                finish_turn: true,
             });
         }
 
