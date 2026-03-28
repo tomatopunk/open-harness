@@ -6,11 +6,11 @@
 
 | 概念 | harness 落点 |
 |------|----------------|
-| Pregel 超步 / 任务调度 | `engine_v2::run_agent_loop` 外层 turn + `pregel::bump_after_node` + `dispatch::execute_engine_command` |
+| Pregel 超步 / 任务调度 | `engine_v2::run_agent_loop` + `superstep_kernel::{prepare_tasks, apply_writes_after_node}` + `dispatch::execute_engine_command` |
 | State + reducer | `agent_ports::StateEffect` + `StatePatch` 批量应用 |
 | Checkpoint 元数据 | `CheckpointRecord::engine`（`EngineCheckpointExtensions`） |
 | Command 路由 | `classify_llm_routing` / `EngineCommand::from_llm_output` |
-| 并行 ToolNode | `invoke_tools_bounded` + `RunBudget::max_concurrent_tool_calls` |
+| 并行 ToolNode | `superstep_kernel::execute::invoke_tool_calls_in_call_order` + `RunBudget::max_concurrent_tool_calls` |
 
 ## LangChain
 
