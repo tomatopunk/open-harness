@@ -162,6 +162,7 @@ fn build_inner_run_config(
         enabled_skill_names,
         loop_detected: ctx.loop_detected,
         seed_todos,
+        ..Default::default()
     }
 }
 
@@ -252,8 +253,10 @@ async fn run_orchestrate_with_state(
     let budget = RunBudget {
         max_turns: st.governance.policies.max_turns.max(1),
         max_subagent_tasks: st.governance.subagents.max_tasks_per_run.max(1),
+        subagent_task_cap_per_response: 4,
         max_concurrent_subagents: st.governance.subagents.max_concurrent.max(1),
         max_concurrent_tool_calls: 8,
+        per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
     };
     let tool_cfg = ToolLoopConfig { assembly: st.governance.tool_assembly() };
     let run_cfg = build_inner_run_config(&ctx, &body, st.governance.as_ref());
