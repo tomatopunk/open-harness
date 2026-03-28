@@ -14,6 +14,7 @@ use axum::{
 use chrono::Utc;
 use config_runtime::{load_cached_or_default, reload_cached, AuthConfig, ModelConfig};
 use dashmap::DashMap;
+use governance_plane::GovernanceBundle;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
@@ -41,6 +42,7 @@ struct AppState {
     conversation_map: Arc<DashMap<String, ConversationEntry>>,
     models: Arc<RwLock<Vec<ModelConfig>>>,
     auth_state: SharedAuthState,
+    governance: Arc<GovernanceBundle>,
 }
 
 #[derive(Clone)]
@@ -85,12 +87,19 @@ async fn main() -> anyhow::Result<()> {
     let auth_settings = auth_settings_from_config(&cfg.gateway.auth);
     let auth_state =
         shared_state(auth_settings, vec!["/healthz".to_string(), "/metrics".to_string()]);
+    let governance = Arc::new(
+        GovernanceBundle::load_from_dir(&cfg.runtime.governance_root).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "governance load failed; using defaults");
+            GovernanceBundle::default()
+        }),
+    );
     let state = AppState {
         langgraph_upstream: Arc::new(RwLock::new(cfg.gateway.langgraph_upstream.clone())),
         client: reqwest::Client::new(),
         conversation_map: Arc::new(DashMap::new()),
         models: Arc::new(RwLock::new(cfg.models.clone())),
         auth_state: auth_state.clone(),
+        governance,
     };
 
     let app = Router::new()
@@ -123,8 +132,11 @@ async fn shutdown_signal() {
     metrics::counter!("open_harness_gateway_shutdown_total").increment(1);
 }
 
-async fn health() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
+async fn health(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "status": "ok",
+        "policy_version": st.governance.policy_version,
+    }))
 }
 
 async fn openapi_spec() -> impl IntoResponse {

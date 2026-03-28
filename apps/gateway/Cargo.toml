@@ -30,6 +30,7 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 chrono = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
+governance-plane = { path = "../../crates/governance-plane" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 app-auth = { path = "../../crates/app-auth" }
 metrics = { workspace = true }
