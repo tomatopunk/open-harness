@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/agent-ports",
+    "crates/graph-runtime-core",
+    "crates/agent-loop-runtime",
+    "crates/agent-adapters",
+    "crates/governance-plane",
     "crates/protocol-compat",
     "crates/config-runtime",
     "crates/state-abstraction",

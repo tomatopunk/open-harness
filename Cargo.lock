@@ -3,6 +3,53 @@
 version = 4
 
 [[package]]
+name = "agent-adapters"
+version = "0.1.0"
+dependencies = [
+ "agent-ports",
+ "async-trait",
+ "chrono",
+ "model-runtime",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tool-runtime",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agent-loop-runtime"
+version = "0.1.0"
+dependencies = [
+ "agent-adapters",
+ "agent-ports",
+ "async-trait",
+ "graph-runtime-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tool-runtime",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agent-ports"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,6 +1151,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "governance-plane"
+version = "0.1.0"
+dependencies = [
+ "agent-ports",
+ "serde",
+ "serde_yaml",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "graph-runtime-core"
+version = "0.1.0"
+dependencies = [
+ "agent-ports",
+ "async-trait",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2120,10 +2191,15 @@ dependencies = [
 name = "open-harness-orchestrator"
 version = "0.1.0"
 dependencies = [
+ "agent-adapters",
+ "agent-loop-runtime",
+ "agent-ports",
  "anyhow",
  "axum",
  "chrono",
  "config-runtime",
+ "governance-plane",
+ "graph-runtime-core",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -2138,6 +2214,7 @@ dependencies = [
  "serde_json",
  "state-abstraction",
  "tokio",
+ "tool-runtime",
  "tower-http 0.5.2",
  "tracing",
  "tracing-opentelemetry",
