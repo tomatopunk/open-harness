@@ -1,0 +1,4 @@
+default_model: heuristic
+entries:
+  - name: heuristic
+    provider: builtin

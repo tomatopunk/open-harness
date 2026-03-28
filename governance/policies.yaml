@@ -1,0 +1,5 @@
+policy_version: "1"
+max_turns: 16
+tool_assembly:
+  max_tools: 32
+  allow_high_risk: false

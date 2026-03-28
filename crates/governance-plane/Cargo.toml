@@ -1,0 +1,12 @@
+[package]
+name = "governance-plane"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Unified governance config: models, tools, policies, subagent budgets"
+
+[dependencies]
+agent-ports = { path = "../agent-ports" }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }

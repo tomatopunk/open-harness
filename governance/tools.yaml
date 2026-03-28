@@ -1,0 +1,9 @@
+manifests:
+  - name: echo
+    description: Echo JSON arguments
+    capability_tags:
+      - builtin
+    risk_level: low
+    timeout_ms: 30000
+    retry_max: 0
+    side_effect_class: none
