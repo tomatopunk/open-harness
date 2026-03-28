@@ -1,3 +1,4 @@
+use agent_ports::{CheckpointRecord, RunId, StepSeq, ThreadId};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::PathBuf;
@@ -6,7 +7,7 @@ use uuid::Uuid;
 
 use crate::path_safety::sanitize_thread_id;
 use crate::traits::{
-    ArtifactStore, CheckpointBlob, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
+    ArtifactStore, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
     SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask,
     SubagentTaskStore, ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
 };
@@ -25,8 +26,24 @@ impl LocalFsStateStore {
         self.root.join("state").join("thread_meta.json")
     }
 
-    fn checkpoint_path(&self, thread_id: Uuid) -> PathBuf {
-        self.root.join("state").join("checkpoints").join(format!("{thread_id}.json"))
+    fn checkpoint_run_dir(&self, thread_id: ThreadId, run_id: RunId) -> PathBuf {
+        self.root
+            .join("state")
+            .join("checkpoints")
+            .join(thread_id.0.to_string())
+            .join(run_id.0.to_string())
+    }
+
+    fn checkpoint_steps_dir(&self, thread_id: ThreadId, run_id: RunId) -> PathBuf {
+        self.checkpoint_run_dir(thread_id, run_id).join("steps")
+    }
+
+    fn checkpoint_step_path(&self, thread_id: ThreadId, run_id: RunId, step: StepSeq) -> PathBuf {
+        self.checkpoint_steps_dir(thread_id, run_id).join(format!("{:020}.json", step.0))
+    }
+
+    fn checkpoint_latest_path(&self, thread_id: ThreadId, run_id: RunId) -> PathBuf {
+        self.checkpoint_run_dir(thread_id, run_id).join("latest.json")
     }
 
     fn memory_path(&self, thread_id: Uuid) -> PathBuf {
@@ -132,14 +149,37 @@ impl ThreadMetaStore for LocalFsStateStore {
 
 #[async_trait]
 impl CheckpointStore for LocalFsStateStore {
-    async fn save_checkpoint(&self, blob: &CheckpointBlob) -> Result<(), StateError> {
-        self.write_json(&self.checkpoint_path(blob.thread_id), blob).await
+    async fn save_checkpoint(&self, record: &CheckpointRecord) -> Result<(), StateError> {
+        let step_path = self.checkpoint_step_path(record.thread_id, record.run_id, record.step_seq);
+        let latest_path = self.checkpoint_latest_path(record.thread_id, record.run_id);
+        self.write_json(&step_path, record).await?;
+        self.write_json(&latest_path, record).await
     }
 
-    async fn load_checkpoint(&self, thread_id: Uuid) -> Result<Option<CheckpointBlob>, StateError> {
-        let path = self.checkpoint_path(thread_id);
+    async fn load_latest_checkpoint(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> Result<Option<CheckpointRecord>, StateError> {
+        let path = self.checkpoint_latest_path(thread_id, run_id);
         match fs::read(path.clone()).await {
-            Ok(bytes) => serde_json::from_slice::<CheckpointBlob>(&bytes)
+            Ok(bytes) => serde_json::from_slice::<CheckpointRecord>(&bytes)
+                .map(Some)
+                .map_err(|e| StateError::Backend(format!("json decode {}: {e}", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StateError::Backend(format!("read {}: {e}", path.display()))),
+        }
+    }
+
+    async fn load_checkpoint_at_step(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+        step_seq: StepSeq,
+    ) -> Result<Option<CheckpointRecord>, StateError> {
+        let path = self.checkpoint_step_path(thread_id, run_id, step_seq);
+        match fs::read(path.clone()).await {
+            Ok(bytes) => serde_json::from_slice::<CheckpointRecord>(&bytes)
                 .map(Some)
                 .map_err(|e| StateError::Backend(format!("json decode {}: {e}", path.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

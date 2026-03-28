@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+agent-ports = { path = "../agent-ports" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

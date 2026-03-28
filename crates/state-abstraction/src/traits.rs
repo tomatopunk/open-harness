@@ -1,3 +1,4 @@
+use agent_ports::{CheckpointRecord, RunId, StepSeq, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,13 +21,6 @@ pub struct ThreadMeta {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub label: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointBlob {
-    pub thread_id: Uuid,
-    pub checkpoint_id: String,
-    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,8 +87,19 @@ pub trait ThreadMetaStore: Send + Sync {
 
 #[async_trait]
 pub trait CheckpointStore: Send + Sync {
-    async fn save_checkpoint(&self, blob: &CheckpointBlob) -> Result<(), StateError>;
-    async fn load_checkpoint(&self, thread_id: Uuid) -> Result<Option<CheckpointBlob>, StateError>;
+    /// Persist one checkpoint record (append per step under thread/run).
+    async fn save_checkpoint(&self, record: &CheckpointRecord) -> Result<(), StateError>;
+    async fn load_latest_checkpoint(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> Result<Option<CheckpointRecord>, StateError>;
+    async fn load_checkpoint_at_step(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+        step_seq: StepSeq,
+    ) -> Result<Option<CheckpointRecord>, StateError>;
 }
 
 #[async_trait]
