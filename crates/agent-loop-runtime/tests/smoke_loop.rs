@@ -16,13 +16,13 @@ async fn inner_loop_completes_with_echo_tool() {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(EchoTool));
     let tools = Arc::new(RegistryToolAdapter::new(Arc::new(reg), default_echo_manifests()));
-    let deps = AgentLoopDeps {
-        llm: Arc::new(HeuristicLlmAdapter::default()),
+    let deps = AgentLoopDeps::new(
+        Arc::new(HeuristicLlmAdapter::default()),
         tools,
-        memory: Arc::new(DefaultMemoryAdapter),
-        skills: Arc::new(DefaultSkillAdapter::default()),
-        subagents: Arc::new(DefaultSubagentAdapter::default()),
-    };
+        Arc::new(DefaultMemoryAdapter),
+        Arc::new(DefaultSkillAdapter::default()),
+        Arc::new(DefaultSubagentAdapter),
+    );
     let cp: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
     let graph = GraphRuntime::new(cp);
     let tid = ThreadId::new_v4();

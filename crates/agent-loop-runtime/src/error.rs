@@ -7,6 +7,8 @@ pub enum AgentLoopError {
     Port(#[from] PortError),
     #[error("graph: {0}")]
     Graph(String),
+    #[error("lead_kernel: {0}")]
+    LeadKernel(String),
     #[error("max_turns_exceeded")]
     MaxTurnsExceeded,
 }

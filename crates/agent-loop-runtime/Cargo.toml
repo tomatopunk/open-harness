@@ -8,9 +8,12 @@ description = "Model-tool-state main loop over agent-ports and graph-runtime-cor
 [dependencies]
 agent-ports = { path = "../agent-ports" }
 graph-runtime-core = { path = "../graph-runtime-core" }
+protocol-compat = { path = "../protocol-compat" }
+runtime-kernel = { path = "../runtime-kernel" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
