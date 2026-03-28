@@ -1,6 +1,6 @@
 //! Per-run inputs from governance + request (middleware hints).
 
-use agent_ports::TodoItem;
+use agent_ports::{BuildDispatchPlanOptions, ProviderStrategy, TodoItem, ToolStrategy};
 use protocol_compat::Configurable;
 
 use crate::runtime_spec::{LeadRuntimeSpec, SubagentRuntimeSpec};
@@ -22,6 +22,19 @@ pub struct AgentLoopRunConfig {
     /// Lead-oriented phase gates (shared baseline vs subagent-only overrides at call sites).
     pub lead_spec: LeadRuntimeSpec,
     pub subagent_spec: SubagentRuntimeSpec,
+    /// Command IR / structured-output strategy (P3); wired into [`agent_ports::build_dispatch_plan_with_options`].
+    pub provider_strategy: ProviderStrategy,
+    pub tool_strategy: ToolStrategy,
+}
+
+impl AgentLoopRunConfig {
+    #[must_use]
+    pub fn dispatch_plan_options(&self) -> BuildDispatchPlanOptions {
+        BuildDispatchPlanOptions {
+            provider: self.provider_strategy.clone(),
+            tool: self.tool_strategy.clone(),
+        }
+    }
 }
 
 impl Default for AgentLoopRunConfig {
@@ -37,6 +50,8 @@ impl Default for AgentLoopRunConfig {
             seed_todos: Vec::new(),
             lead_spec: LeadRuntimeSpec::default(),
             subagent_spec: SubagentRuntimeSpec::default(),
+            provider_strategy: ProviderStrategy::default(),
+            tool_strategy: ToolStrategy::default(),
         }
     }
 }

@@ -11,6 +11,8 @@ pub enum AgentLoopError {
     LeadKernel(String),
     #[error("max_turns_exceeded")]
     MaxTurnsExceeded,
+    #[error("invariant: {0}")]
+    InvariantViolation(String),
 }
 
 pub type AgentLoopResult<T> = Result<T, AgentLoopError>;
