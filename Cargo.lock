@@ -7,12 +7,14 @@ name = "agent-adapters"
 version = "0.1.0"
 dependencies = [
  "agent-ports",
+ "async-openai",
  "async-trait",
  "chrono",
  "model-runtime",
  "parking_lot",
  "serde",
  "serde_json",
+ "state-abstraction",
  "thiserror 1.0.69",
  "tokio",
  "tool-runtime",
@@ -1164,6 +1166,7 @@ dependencies = [
 name = "graph-runtime-core"
 version = "0.1.0"
 dependencies = [
+ "agent-adapters",
  "agent-ports",
  "async-trait",
  "parking_lot",
@@ -2124,6 +2127,7 @@ dependencies = [
  "config-runtime",
  "dashmap",
  "futures",
+ "governance-plane",
  "http",
  "metrics",
  "metrics-exporter-prometheus",
@@ -2157,6 +2161,7 @@ dependencies = [
  "config-runtime",
  "dashmap",
  "futures",
+ "governance-plane",
  "hmac",
  "metrics",
  "metrics-exporter-prometheus",
@@ -3615,6 +3620,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "state-abstraction"
 version = "0.1.0"
 dependencies = [
+ "agent-ports",
  "async-trait",
  "chrono",
  "serde",
