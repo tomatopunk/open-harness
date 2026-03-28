@@ -5,7 +5,9 @@ use graph_runtime_core::GraphRuntime;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use orchestrator_core::LeadPipeline;
 use protocol_compat::Configurable;
-use runtime_llm_chain_adapter::{RuntimeRunMetadata, RUNTIME_OUTPUT_SCHEMA_VERSION};
+use runtime_llm_chain_adapter::{
+    LlmChainAdapter, RuntimeRunMetadata, RUNTIME_OUTPUT_SCHEMA_VERSION,
+};
 use sandbox_runtime::{LocalSandbox, Sandbox, SandboxRequest};
 use serde::Deserialize;
 use serde_json::json;
@@ -37,6 +39,8 @@ struct AppState {
     governance: Arc<GovernanceBundle>,
     graph: Arc<GraphRuntime>,
     agent_deps: Arc<AgentLoopDeps>,
+    runtime_engine: String,
+    llm_chain: Arc<LlmChainAdapter>,
 }
 
 fn build_agent_loop_deps(
@@ -84,10 +88,8 @@ fn build_agent_loop_deps(
         preamble: "You are the open-harness inner runtime (model-tool-state loop).".into(),
         preamble_by_name,
     });
-    let subagents = Arc::new(DefaultSubagentAdapter {
-        max_concurrent: bundle.subagents.max_concurrent.max(1) as usize,
-    });
-    AgentLoopDeps { llm, tools, memory, skills, subagents }
+    let subagents = Arc::new(DefaultSubagentAdapter);
+    AgentLoopDeps::new(llm, tools, memory, skills, subagents)
 }
 
 fn inner_runtime_metadata(state: &ThreadState, policy_version: &str) -> RuntimeRunMetadata {
@@ -152,6 +154,7 @@ fn build_inner_run_config(
         .map(|(i, title)| TodoItem { id: format!("mw-{i}"), title: title.clone(), done: false })
         .collect();
     AgentLoopRunConfig {
+        configurable: body.configurable.clone(),
         model_name: body.configurable.model_name.clone(),
         policy_version: gov.policy_version.clone(),
         is_plan_mode: body.configurable.is_plan_mode.unwrap_or(false),
@@ -250,44 +253,73 @@ async fn run_orchestrate_with_state(
         max_turns: st.governance.policies.max_turns.max(1),
         max_subagent_tasks: st.governance.subagents.max_tasks_per_run.max(1),
         max_concurrent_subagents: st.governance.subagents.max_concurrent.max(1),
+        max_concurrent_tool_calls: 8,
     };
     let tool_cfg = ToolLoopConfig { assembly: st.governance.tool_assembly() };
     let run_cfg = build_inner_run_config(&ctx, &body, st.governance.as_ref());
-    let loop_result = run_agent_loop(
-        st.graph.as_ref(),
-        st.agent_deps.as_ref(),
-        thread_id,
-        base_state,
-        body.messages.clone(),
-        budget,
-        &tool_cfg,
-        &run_cfg,
-    )
-    .await;
 
-    match loop_result {
-        Ok((final_state, sink)) => Json(json!({
-            "ok": true,
-            "thread_id": thread_uuid,
-            "runtime_engine": "inner",
-            "loop_detected": ctx.loop_detected,
-            "token_usage_estimate": ctx.token_usage_estimate,
-            "todos": ctx.todos,
-            "memory_facts": facts,
-            "skills": skills,
-            "tool_records_count": tool_records.len(),
-            "subagent_tasks_count": subagent_records.len(),
-            "sandbox_executions_count": sandbox_records.len(),
-            "runtime_metadata": inner_runtime_metadata(&final_state, &st.governance.policy_version),
-            "agent_events": sink.events,
-            "thread_state": final_state,
-            "events": []
-        })),
-        Err(e) => Json(json!({
-            "ok": false,
-            "error": e.to_string(),
-            "thread_id": thread_uuid,
-        })),
+    if st.runtime_engine == "llm-chain" {
+        match st.llm_chain.run_with_output(body.configurable.clone(), body.messages.clone()).await {
+            Ok(out) => Json(json!({
+                "ok": true,
+                "thread_id": thread_uuid,
+                "runtime_engine": "llm-chain",
+                "loop_detected": ctx.loop_detected,
+                "token_usage_estimate": ctx.token_usage_estimate,
+                "todos": ctx.todos,
+                "memory_facts": facts,
+                "skills": skills,
+                "tool_records_count": tool_records.len(),
+                "subagent_tasks_count": subagent_records.len(),
+                "sandbox_executions_count": sandbox_records.len(),
+                "runtime_metadata": out.metadata,
+                "agent_events": [],
+                "thread_state": base_state,
+                "events": out.events,
+            })),
+            Err(e) => Json(json!({
+                "ok": false,
+                "error": e.to_string(),
+                "thread_id": thread_uuid,
+            })),
+        }
+    } else {
+        let loop_result = run_agent_loop(
+            st.graph.as_ref(),
+            st.agent_deps.as_ref(),
+            thread_id,
+            base_state,
+            body.messages.clone(),
+            budget,
+            &tool_cfg,
+            &run_cfg,
+        )
+        .await;
+
+        match loop_result {
+            Ok((final_state, sink)) => Json(json!({
+                "ok": true,
+                "thread_id": thread_uuid,
+                "runtime_engine": "inner",
+                "loop_detected": final_state.governance_marks.tags.iter().any(|t| t == "loop_detected"),
+                "token_usage_estimate": ctx.token_usage_estimate,
+                "todos": ctx.todos,
+                "memory_facts": facts,
+                "skills": skills,
+                "tool_records_count": tool_records.len(),
+                "subagent_tasks_count": subagent_records.len(),
+                "sandbox_executions_count": sandbox_records.len(),
+                "runtime_metadata": inner_runtime_metadata(&final_state, &st.governance.policy_version),
+                "agent_events": sink.events,
+                "thread_state": final_state,
+                "events": []
+            })),
+            Err(e) => Json(json!({
+                "ok": false,
+                "error": e.to_string(),
+                "thread_id": thread_uuid,
+            })),
+        }
     }
 }
 
@@ -328,7 +360,15 @@ async fn main() -> anyhow::Result<()> {
     let checkpoint_store: Arc<dyn CheckpointStore> = store.clone();
     let checkpoint_port = Arc::new(DynCheckpointStorePort::new(checkpoint_store));
     let graph = Arc::new(GraphRuntime::new(checkpoint_port));
-    let app_state = AppState { store, governance, graph, agent_deps };
+    let runtime_engine = cfg.runtime.engine.clone();
+    let app_state = AppState {
+        store,
+        governance,
+        graph,
+        agent_deps,
+        runtime_engine,
+        llm_chain: Arc::new(LlmChainAdapter::default()),
+    };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
