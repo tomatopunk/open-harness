@@ -4,24 +4,26 @@
 
 mod agent_loop_types;
 pub mod budget;
+mod child_run;
 mod commit_metadata;
 mod dispatch;
 mod engine_v2;
 pub mod error;
 mod lead_kernel;
+mod lead_outer_superstep;
 mod loop_common;
 pub mod loop_engine;
 mod loop_hardening;
 pub mod middleware;
 pub mod policy;
 pub mod pregel;
+mod premodel_phase;
 pub mod run_config;
 pub mod runtime_spec;
 mod scheduler;
 pub mod state_patch;
 pub mod state_reducer;
 pub mod superstep_kernel;
-mod superstep_turn;
 mod turn_flow;
 mod turn_reducer;
 
@@ -31,5 +33,5 @@ pub use error::{AgentLoopError, AgentLoopResult};
 pub use loop_engine::{run_agent_loop, AgentLoopDeps, ToolLoopConfig};
 pub use middleware::{AgentLoopMiddleware, MiddlewareChain, NoopMiddleware, TurnContext};
 pub use run_config::AgentLoopRunConfig;
-pub use runtime_spec::{LeadRuntimeSpec, SubagentRuntimeSpec};
+pub use runtime_spec::{DispatchPhaseNodes, LeadRuntimeSpec, SubagentRuntimeSpec};
 pub use turn_flow::{classify_turn_outcome, TurnOutcome};
