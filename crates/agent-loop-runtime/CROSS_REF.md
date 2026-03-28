@@ -6,10 +6,10 @@
 
 | 概念 | harness 落点 |
 |------|----------------|
-| Pregel 超步 / 任务调度 | `engine_v2::run_agent_loop` + `lead_outer_superstep::execute_inner_superstep_turn` + `superstep_kernel::{prepare_tasks, apply_writes_after_node}` + `dispatch::execute_engine_command` |
+| Pregel 超步 / 任务调度 | `engine_v2::run_agent_loop` + `lead_outer_superstep::execute_inner_superstep_turn` + `superstep_kernel::{prepare_tasks, apply_writes_after_node}`（`TaskEnvelope::id` → `PendingWriteRecord::task_id`）+ `dispatch::execute_engine_command` |
 | State + reducer | `agent_ports::StateEffect` + `StatePatch` 批量应用 |
-| Checkpoint 元数据 | `CheckpointRecord::engine`（`EngineCheckpointExtensions`） |
-| Command 路由 | `classify_llm_routing` / `EngineCommand::try_from_llm_output` + `build_dispatch_plan_with_options` + `dispatch::route_llm_output` |
+| Checkpoint 元数据 | `CheckpointRecord::engine`（`EngineCheckpointExtensions`；`resume_cursor` 在 `ThreadState.pregel.interrupt` 存在时序列化 `ResumeCursor`） |
+| Command 路由 | `build_dispatch_plan_with_options` + `dispatch::route_llm_output`（主路径）；`classify_llm_routing` / `EngineCommand::try_from_llm_output` 兼容测试 |
 | 并行 ToolNode | `superstep_kernel::execute::invoke_tool_calls_in_call_order` + `RunBudget::max_concurrent_tool_calls` |
 
 ## LangChain

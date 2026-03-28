@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 use crate::ids::{RunId, StepSeq, ThreadId};
 use crate::interrupt::{InterruptSnapshot, ResumeCursor};
@@ -86,6 +87,9 @@ pub struct PendingWriteRecord {
     pub channel: String,
     pub version: u64,
     pub node_id: String,
+    /// LangGraph-style task identity: the [`crate::task::TaskEnvelope::id`] for this write when known.
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
 }
 
 /// Pregel-style channel versions for scheduling / resume (LangGraph-inspired).

@@ -38,16 +38,21 @@ pub(crate) async fn execute_inner_superstep_turn(
     prepare_tasks(state);
 
     // --- Node: Lead ---
-    prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_LEAD);
+    let task_lead = prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_LEAD);
     if run_cfg.lead_spec.apply_lead_kernel {
         apply_lead_kernel_turn(deps.lead_kernel.clone(), state, run_cfg).await?;
     }
-    apply_writes_after_node(state, crate::runtime_spec::LeadRuntimeSpec::NODE_LEAD);
+    apply_writes_after_node(
+        state,
+        crate::runtime_spec::LeadRuntimeSpec::NODE_LEAD,
+        Some(task_lead),
+    );
 
     repair_missing_tool_results(state);
 
     // --- Node: PreModel ---
-    prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL);
+    let task_premodel =
+        prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL);
     let injection = run_premodel_skills_memory(
         deps,
         &turn_ctx,
@@ -60,7 +65,11 @@ pub(crate) async fn execute_inner_superstep_turn(
         run_cfg.lead_spec.premodel_skills_memory,
     )
     .await?;
-    apply_writes_after_node(state, crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL);
+    apply_writes_after_node(
+        state,
+        crate::runtime_spec::LeadRuntimeSpec::NODE_PREMODEL,
+        Some(task_premodel),
+    );
 
     let manifests = deps.tools.assemble(&tool_cfg.assembly);
     let assembled_tool_names: Vec<String> = manifests.iter().map(|m| m.name.clone()).collect();
@@ -69,7 +78,7 @@ pub(crate) async fn execute_inner_superstep_turn(
     deps.middleware.before_model(&turn_ctx, state, &mut messages_for_llm).await?;
 
     // --- Node: Model ---
-    prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_MODEL);
+    let _task_model = prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_MODEL);
     emit_stage(sink, run_id, step_seq, LoopStage::Model, true);
     let mut out = deps
         .llm
@@ -87,11 +96,16 @@ pub(crate) async fn execute_inner_superstep_turn(
         .await?;
 
     // --- Node: PostModel ---
-    prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL);
+    let task_postmodel =
+        prepare_pull_task(state, crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL);
     emit_stage(sink, run_id, step_seq, LoopStage::PostModel, true);
     deps.middleware.after_model(&turn_ctx, state, &out).await?;
     emit_stage(sink, run_id, step_seq, LoopStage::PostModel, false);
-    apply_writes_after_node(state, crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL);
+    apply_writes_after_node(
+        state,
+        crate::runtime_spec::LeadRuntimeSpec::NODE_POSTMODEL,
+        Some(task_postmodel),
+    );
 
     apply_repeated_tool_loop_breaker(&mut out, last_tool_call_fingerprint);
 

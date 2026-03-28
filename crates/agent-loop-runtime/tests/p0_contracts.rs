@@ -11,11 +11,21 @@ use agent_ports::{TaskKind, ThreadId, ThreadState, ToolCallSpec};
 use serde_json::json;
 
 #[test]
+fn pending_write_pairs_with_pull_task_id() {
+    let mut st = ThreadState::new(ThreadId::new_v4());
+    superstep_kernel::prepare_tasks(&mut st);
+    let task_id = superstep_kernel::prepare::prepare_pull_task(&mut st, "lead");
+    superstep_kernel::apply_writes_after_node(&mut st, "lead", Some(task_id));
+    assert_eq!(st.pregel.pending_write_queue.len(), 1);
+    assert_eq!(st.pregel.pending_write_queue[0].task_id, Some(task_id));
+}
+
+#[test]
 fn golden_staged_pull_sequence_matches_engine_phase_nodes() {
     let mut st = ThreadState::new(ThreadId::new_v4());
     superstep_kernel::prepare_tasks(&mut st);
     for node in LeadRuntimeSpec::main_phase_pull_order() {
-        superstep_kernel::prepare::prepare_pull_task(&mut st, node);
+        let _ = superstep_kernel::prepare::prepare_pull_task(&mut st, node);
     }
     assert_eq!(st.pregel.staged_tasks.len(), 4);
     for (i, expected) in LeadRuntimeSpec::main_phase_pull_order().iter().enumerate() {

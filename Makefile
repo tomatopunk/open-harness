@@ -1,11 +1,13 @@
-.PHONY: help fmt fmt-check lint test pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke acceptance docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke acceptance docker-up docker-down clean
 
 help:
 	@echo "open-harness common commands"
 	@echo ""
 	@echo "  make fmt              - format all Rust code"
 	@echo "  make fmt-check        - check formatting only"
-	@echo "  make pre-commit       - required checks before commit (fmt-check + lint + test)"
+	@echo "  make pre-commit       - required checks before commit (fmt-check + lint + test + doc-check + command-ir-guard)"
+	@echo "  make doc-check        - inner-engine roadmap / baseline doc consistency"
+	@echo "  make command-ir-guard - ensure Command IR single entry in runtime"
 	@echo "  make lint             - run clippy with warnings as errors"
 	@echo "  make test             - run workspace tests"
 	@echo "  make check            - run fmt-check + lint + test"
@@ -32,9 +34,15 @@ lint:
 test:
 	cargo test --workspace
 
-pre-commit: fmt-check lint test
+doc-check:
+	python3 scripts/check_inner_engine_docs.py
 
-check: fmt-check lint test
+command-ir-guard:
+	bash scripts/check_command_ir_guard.sh
+
+pre-commit: fmt-check lint test doc-check command-ir-guard
+
+check: fmt-check lint test doc-check command-ir-guard
 
 build:
 	cargo build --workspace --all-targets

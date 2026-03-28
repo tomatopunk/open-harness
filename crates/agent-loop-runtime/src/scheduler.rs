@@ -5,11 +5,31 @@
 //! - **apply_writes**: [`crate::pregel::bump_after_node`] records channel versions + [`PregelMeta::pending_write_queue`].
 
 use agent_ports::{TaskEnvelope, ThreadState, ToolCallSpec};
+use uuid::Uuid;
 
 /// Stage PULL tasks for named phase nodes (lead, premodel, model, postmodel, …).
+/// Returns the task envelope id for pairing with [`crate::pregel::bump_after_node`].
 #[inline]
-pub fn prepare_pull_task(state: &mut ThreadState, node_id: &str) {
-    state.pregel.staged_tasks.push(TaskEnvelope::pull(node_id));
+#[must_use]
+pub fn prepare_pull_task(state: &mut ThreadState, node_id: &str) -> Uuid {
+    let env = TaskEnvelope::pull(node_id);
+    let id = env.id;
+    state.pregel.staged_tasks.push(env);
+    id
+}
+
+/// First [`TaskEnvelope::id`] among the last `n` staged tasks (for PUSH batch `apply_writes` pairing).
+#[must_use]
+pub fn first_task_id_in_staged_tail(state: &ThreadState, n: usize) -> Option<Uuid> {
+    if n == 0 {
+        return None;
+    }
+    let len = state.pregel.staged_tasks.len();
+    if len < n {
+        return None;
+    }
+    let start = len - n;
+    state.pregel.staged_tasks.get(start).map(|e| e.id)
 }
 
 /// Stage PUSH tasks for concurrent tool invokes (one envelope per allowed call).

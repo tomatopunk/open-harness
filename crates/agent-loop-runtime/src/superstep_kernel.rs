@@ -16,13 +16,20 @@ pub fn prepare_tasks(state: &mut agent_ports::ThreadState) {
 
 /// 任务准备（PULL 相位节点、PUSH 扇出槽位）。
 pub mod prepare {
-    pub use crate::scheduler::{prepare_pull_task, prepare_subagent_fanout, prepare_tool_fanout};
+    pub use crate::scheduler::{
+        first_task_id_in_staged_tail, prepare_pull_task, prepare_subagent_fanout,
+        prepare_tool_fanout,
+    };
 }
 
 /// Phase 3 — 节点完成后写入 channel 版本与 pending writes。
 #[inline]
-pub fn apply_writes_after_node(state: &mut agent_ports::ThreadState, node_id: &str) {
-    pregel::bump_after_node(state, node_id);
+pub fn apply_writes_after_node(
+    state: &mut agent_ports::ThreadState,
+    node_id: &str,
+    task_id: Option<uuid::Uuid>,
+) {
+    pregel::bump_after_node(state, node_id, task_id);
 }
 
 /// Phase 2 — 可并发执行单元（工具扇出等）。

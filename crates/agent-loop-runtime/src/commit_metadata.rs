@@ -14,10 +14,10 @@ pub mod keys {
 use serde_json::{json, Value};
 
 #[must_use]
-pub fn clarify_exit() -> Value {
+pub fn interrupt_exit() -> Value {
     json!({
-        keys::STAGE: "clarify_exit",
-        keys::REASON: "clarification",
+        keys::STAGE: "interrupt_exit",
+        keys::REASON: "interrupt",
     })
 }
 

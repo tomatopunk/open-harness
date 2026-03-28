@@ -29,6 +29,7 @@ mod turn_reducer;
 
 pub use agent_ports::EngineCommand;
 pub use budget::{truncate_subtask_plan, RunBudget};
+pub use engine_v2::maybe_resume_from_interrupt;
 pub use error::{AgentLoopError, AgentLoopResult};
 pub use loop_engine::{run_agent_loop, AgentLoopDeps, ToolLoopConfig};
 pub use middleware::{AgentLoopMiddleware, MiddlewareChain, NoopMiddleware, TurnContext};

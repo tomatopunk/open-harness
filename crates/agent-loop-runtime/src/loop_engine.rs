@@ -7,7 +7,7 @@
 //! | `LoopStage::PreModel` | After `apply_lead_kernel_turn`: skill injection + memory retrieve. |
 //! | `LoopStage::Model` | `LLMPort::infer_turn` only. |
 //! | `LoopStage::PostModel` | `AgentLoopMiddleware::after_model` (no `commit_step` here). |
-//! | `LoopStage::ClarifyExit` | Pending clarification; checkpoint then return. |
+//! | `LoopStage::InterruptExit` | Interrupt / HITL wait; checkpoint then return. |
 //! | `LoopStage::SubagentExec` | Subagent plan execution + merge. |
 //! | `LoopStage::ToolExec` | Tool invocations for one model turn. |
 //! | `LoopStage::MemoryCommit` | `MemoryPort::extract_and_commit` on the text path. |

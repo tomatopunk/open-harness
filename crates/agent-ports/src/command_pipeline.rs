@@ -132,7 +132,7 @@ pub fn validate_engine_command_invariants(cmd: &EngineCommand) -> Result<(), &'s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolCallSpec;
+    use crate::{SubtaskPlan, SubtaskSpec, ToolCallSpec};
     use serde_json::json;
 
     #[test]
@@ -168,5 +168,52 @@ mod tests {
             plan.command,
             EngineCommand::Interrupt { kind: InterruptKind::Clarification { .. } }
         ));
+    }
+
+    /// R2 行为矩阵：非 strict 时重复 call_id 仍可通过（由宿主/模型约束）。
+    #[test]
+    fn tool_strategy_non_strict_allows_duplicate_call_ids() {
+        let out = LlmTurnOutput {
+            tool_calls: vec![
+                ToolCallSpec { name: "echo".into(), args: json!({}), call_id: "dup".into() },
+                ToolCallSpec { name: "echo".into(), args: json!({}), call_id: "dup".into() },
+            ],
+            ..Default::default()
+        };
+        let opts = BuildDispatchPlanOptions {
+            tool: ToolStrategy { strict_validation: false },
+            ..Default::default()
+        };
+        let plan = build_dispatch_plan_with_options(&out, &opts).expect("valid");
+        assert!(matches!(plan.command, EngineCommand::ToolCalls { .. }));
+    }
+
+    #[test]
+    fn provider_strategy_round_trip_does_not_break_dispatch() {
+        let out = LlmTurnOutput { assistant_text: Some("x".into()), ..Default::default() };
+        let opts = BuildDispatchPlanOptions {
+            provider: ProviderStrategy { prefer_json_schema: true },
+            ..Default::default()
+        };
+        let plan = build_dispatch_plan_with_options(&out, &opts).expect("valid");
+        assert!(matches!(plan.command, EngineCommand::TextAndMemory { .. }));
+    }
+
+    /// 互斥：子代理计划优先于同轮工具调用（与 classify_raw 优先级一致）。
+    #[test]
+    fn subagent_wins_over_tools_in_same_turn() {
+        let out = LlmTurnOutput {
+            subtask_plan: Some(SubtaskPlan {
+                tasks: vec![SubtaskSpec { goal: "g".into(), input: json!({}), budget_steps: 1 }],
+            }),
+            tool_calls: vec![ToolCallSpec {
+                name: "echo".into(),
+                args: json!({}),
+                call_id: "c".into(),
+            }],
+            ..Default::default()
+        };
+        let plan = build_dispatch_plan(&out).expect("valid");
+        assert!(matches!(plan.command, EngineCommand::Subagent { .. }));
     }
 }

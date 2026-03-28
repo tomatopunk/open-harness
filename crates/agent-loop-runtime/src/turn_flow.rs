@@ -1,4 +1,8 @@
 //! Classification of LLM output into an [`EngineCommand`] (LangGraph-style routing).
+//!
+//! **首选路径**：`agent_ports::build_dispatch_plan` / `agent_ports::build_dispatch_plan_with_options`，经
+//! `dispatch::route_llm_output` 进入运行时。本模块的 [`classify_turn_outcome`] 与 `classify_llm_routing`
+//! 保留用于轻量测试与兼容；新代码不应绕过 Command IR 管线（P3）。
 
 pub use agent_ports::EngineCommand;
 

@@ -14,7 +14,7 @@ use crate::superstep_kernel::execute::{
     invoke_tool_calls_in_call_order, verify_tool_push_tail_matches,
 };
 use crate::superstep_kernel::prepare::{
-    prepare_pull_task, prepare_subagent_fanout, prepare_tool_fanout,
+    first_task_id_in_staged_tail, prepare_pull_task, prepare_subagent_fanout, prepare_tool_fanout,
 };
 use crate::turn_reducer::{apply_turn_effects, tool_round_from_calls, TurnEffect};
 use agent_ports::{
@@ -101,15 +101,16 @@ pub(crate) async fn execute_engine_command(
                     },
                     payload: json!({}),
                 });
-                apply_writes_after_node(state, DispatchPhaseNodes::CLARIFY);
+                let task_clarify = prepare_pull_task(state, DispatchPhaseNodes::CLARIFY);
+                apply_writes_after_node(state, DispatchPhaseNodes::CLARIFY, Some(task_clarify));
                 *state = commit_at_stage(
                     graph,
                     thread_id,
                     run_id,
                     state.clone(),
                     sink,
-                    LoopStage::ClarifyExit,
-                    commit_metadata::clarify_exit(),
+                    LoopStage::InterruptExit,
+                    commit_metadata::interrupt_exit(),
                 )
                 .await?;
                 sink.push(AgentEvent::RunCompleted { run_id, reason: "clarification".into() });
@@ -127,7 +128,7 @@ pub(crate) async fn execute_engine_command(
             });
 
             if turn_ctx.run_cfg.subagent_spec.inherit_premodel_skills_memory {
-                prepare_pull_task(state, SubagentRuntimeSpec::NODE_PREMODEL);
+                let task_sa_pre = prepare_pull_task(state, SubagentRuntimeSpec::NODE_PREMODEL);
                 run_premodel_skills_memory(
                     deps,
                     turn_ctx,
@@ -140,7 +141,11 @@ pub(crate) async fn execute_engine_command(
                     true,
                 )
                 .await?;
-                apply_writes_after_node(state, SubagentRuntimeSpec::NODE_PREMODEL);
+                apply_writes_after_node(
+                    state,
+                    SubagentRuntimeSpec::NODE_PREMODEL,
+                    Some(task_sa_pre),
+                );
             }
 
             prepare_subagent_fanout(state, truncated_plan.tasks.len());
@@ -175,7 +180,9 @@ pub(crate) async fn execute_engine_command(
                 .await?;
             crate::turn_reducer::merge_subagent_port_into_parent(state, merged);
 
-            apply_writes_after_node(state, DispatchPhaseNodes::SUBAGENT);
+            let n = truncated_plan.tasks.len();
+            let task_sub = first_task_id_in_staged_tail(state, n);
+            apply_writes_after_node(state, DispatchPhaseNodes::SUBAGENT, task_sub);
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
@@ -232,6 +239,8 @@ pub(crate) async fn execute_engine_command(
             prepare_tool_fanout(state, &invoke_batch);
             verify_tool_push_tail_matches(state, &invoke_batch)
                 .map_err(crate::error::AgentLoopError::InvariantViolation)?;
+            let n_tools = invoke_batch.len();
+            let task_tools = first_task_id_in_staged_tail(state, n_tools);
 
             for call in &invoke_batch {
                 deps.middleware.before_tool_call(turn_ctx, state, call).await?;
@@ -279,7 +288,7 @@ pub(crate) async fn execute_engine_command(
             let effect = tool_round_from_calls(&calls, payloads);
             StatePatch::from(vec![effect]).apply(state);
 
-            apply_writes_after_node(state, DispatchPhaseNodes::TOOLS);
+            apply_writes_after_node(state, DispatchPhaseNodes::TOOLS, task_tools);
 
             sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: StepKind::Tool });
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, false);
@@ -310,6 +319,7 @@ pub(crate) async fn execute_engine_command(
             }
         }
         EngineCommand::TextAndMemory { assistant_text, finish_turn } => {
+            let task_text = prepare_pull_task(state, DispatchPhaseNodes::TEXT);
             if let Some(text) = assistant_text {
                 apply_turn_effects(state, &[TurnEffect::AppendAssistantMessage { text }]);
             }
@@ -319,7 +329,7 @@ pub(crate) async fn execute_engine_command(
             sink.push(AgentEvent::MemoryUpdated);
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, false);
 
-            apply_writes_after_node(state, DispatchPhaseNodes::TEXT);
+            apply_writes_after_node(state, DispatchPhaseNodes::TEXT, Some(task_text));
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(

@@ -16,7 +16,8 @@ use tracing::debug;
 
 /// After user input while a durable interrupt is pending, record resume cursor and clear
 /// interrupt + clarification wait (unified clarify / interrupt resume path).
-pub(crate) fn maybe_resume_from_interrupt(state: &mut ThreadState, user_messages: &[Value]) {
+/// Clears a durable interrupt when new user messages arrive (host-driven resume).
+pub fn maybe_resume_from_interrupt(state: &mut ThreadState, user_messages: &[Value]) {
     if user_messages.is_empty() {
         return;
     }

@@ -11,7 +11,8 @@ pub enum LoopStage {
     PreModel,
     Model,
     PostModel,
-    ClarifyExit,
+    /// Execution paused for external input (clarification / HITL); checkpoint then return.
+    InterruptExit,
     SubagentExec,
     ToolExec,
     MemoryCommit,
