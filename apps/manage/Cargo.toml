@@ -41,10 +41,7 @@ channel-bootstrap = { path = "../../crates/channel-bootstrap" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 app-auth = { path = "../../crates/app-auth" }
 state-abstraction = { path = "../../crates/state-abstraction" }
-storage-sqlite = { path = "../../crates/storage-sqlite" }
-storage-postgres = { path = "../../crates/storage-postgres" }
-storage-redis = { path = "../../crates/storage-redis" }
-storage-s3 = { path = "../../crates/storage-s3" }
+storage-registry = { path = "../../crates/storage-registry" }
 runtime-kernel = { path = "../../crates/runtime-kernel" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }

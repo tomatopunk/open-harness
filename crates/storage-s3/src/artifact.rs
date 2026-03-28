@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use object_store::Error as ObjectStoreError;
 use object_store::{path::Path, ObjectStore};
 use state_abstraction::{ArtifactStore, StateError};
 use std::sync::Arc;
@@ -31,5 +32,21 @@ impl ArtifactStore for S3ArtifactStore {
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
         Ok(key)
+    }
+
+    async fn get_artifact(
+        &self,
+        thread_id: Uuid,
+        name: &str,
+    ) -> Result<Option<Vec<u8>>, StateError> {
+        let key = format!("{}/{}/{}", self.prefix.trim_end_matches('/'), thread_id, name);
+        let path = Path::from(key);
+        match self.store.get(&path).await {
+            Ok(g) => {
+                Ok(Some(g.bytes().await.map_err(|e| StateError::Backend(e.to_string()))?.to_vec()))
+            }
+            Err(ObjectStoreError::NotFound { .. }) => Ok(None),
+            Err(e) => Err(StateError::Backend(e.to_string())),
+        }
     }
 }

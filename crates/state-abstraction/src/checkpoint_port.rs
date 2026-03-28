@@ -47,4 +47,12 @@ impl CheckpointPort for DynCheckpointStorePort {
     ) -> PortResult<Option<CheckpointRecord>> {
         self.inner.load_checkpoint_at_step(thread_id, run_id, step_seq).await.map_err(map_err)
     }
+
+    async fn list_steps_for_run(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> PortResult<Vec<StepSeq>> {
+        self.inner.list_checkpoint_steps_for_run(thread_id, run_id).await.map_err(map_err)
+    }
 }

@@ -44,6 +44,8 @@ gateway:
 manage:
   bind: 0.0.0.0:8081
   langgraph_url: http://127.0.0.1:2024
+  # Local thread workspace dirs only (deer-flow layout compatibility). NOT a second storage contract:
+  # durable state uses storage.mode + StorageRegistry. See README and docs/ops-storage-modes.md.
   threads_root: .deer-flow/threads
   auth:
     enabled: false

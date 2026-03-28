@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use state_abstraction::StateError;
 use std::sync::Arc;
 use std::time::Duration;
+use storage_registry::RuntimeStorageBundle;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -36,7 +37,7 @@ pub struct ThreadDeleteOp {
 }
 
 pub struct ThreadDeleteEngine {
-    pub threads_root: PathBuf,
+    pub runtime: Arc<RwLock<RuntimeStorageBundle>>,
     pub langgraph_url: Arc<RwLock<String>>,
     pub http: reqwest::Client,
     pub ops: DashMap<Uuid, ThreadDeleteOp>,
@@ -47,9 +48,12 @@ pub struct ThreadDeleteEngine {
 }
 
 impl ThreadDeleteEngine {
-    pub fn new(threads_root: PathBuf, langgraph_url: Arc<RwLock<String>>) -> Arc<Self> {
+    pub fn new(
+        runtime: Arc<RwLock<RuntimeStorageBundle>>,
+        langgraph_url: Arc<RwLock<String>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            threads_root,
+            runtime,
             langgraph_url,
             http: reqwest::Client::new(),
             ops: DashMap::new(),
@@ -100,13 +104,20 @@ impl ThreadDeleteEngine {
         let _guard = self.queue.lock().await;
         self.update_phase(op_id, DeletePhase::DeletingLocal);
 
-        // Local delete: idempotent — missing dir is OK
-        let local_path = self.threads_root.join(thread_id.to_string());
-        match tokio::fs::remove_dir_all(&local_path).await {
+        let local_res = {
+            let rt = self.runtime.read().await;
+            rt.registry.lifecycle.delete_thread_cascade(thread_id).await
+        };
+        match local_res {
             Ok(()) => {
                 self.update_phase(op_id, DeletePhase::LocalDeleted);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(StateError::LifecycleIncomplete(report)) => {
+                let msg = report.summary();
+                self.patch_op(op_id, |o| {
+                    o.local_error = Some(msg);
+                    o.phase = DeletePhase::PartialSuccess;
+                });
                 self.update_phase(op_id, DeletePhase::LocalDeleted);
             }
             Err(e) => {
@@ -180,14 +191,40 @@ impl ThreadDeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use state_abstraction::{
+        ArtifactStore, CheckpointStore, LocalFsStateStore, ManageConfigStore, ManageTaskStore,
+        McpConfigStore, MemoryStore, SandboxExecutionStore, SkillStore, StorageRegistry,
+        SubagentTaskStore, ThreadLifecycleStore, ThreadMetaStore, ThreadUploadStore,
+        ToolRecordStore,
+    };
     use std::collections::HashSet;
+
+    fn test_bundle(root: std::path::PathBuf) -> RuntimeStorageBundle {
+        let store = Arc::new(LocalFsStateStore::new(root));
+        let registry = StorageRegistry::new(
+            store.clone() as Arc<dyn ThreadMetaStore>,
+            store.clone() as Arc<dyn CheckpointStore>,
+            store.clone() as Arc<dyn ArtifactStore>,
+            store.clone() as Arc<dyn ThreadUploadStore>,
+            store.clone() as Arc<dyn MemoryStore>,
+            store.clone() as Arc<dyn SkillStore>,
+            store.clone() as Arc<dyn ToolRecordStore>,
+            store.clone() as Arc<dyn SubagentTaskStore>,
+            store.clone() as Arc<dyn SandboxExecutionStore>,
+            store.clone() as Arc<dyn ManageTaskStore>,
+            store.clone() as Arc<dyn McpConfigStore>,
+            store.clone() as Arc<dyn ManageConfigStore>,
+            store.clone() as Arc<dyn ThreadLifecycleStore>,
+        );
+        RuntimeStorageBundle { registry, capabilities: json!({}), active_mode: "local_fs".into() }
+    }
 
     #[tokio::test]
     async fn local_delete_idempotent_missing_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("threads");
         let eng = ThreadDeleteEngine::new(
-            root.clone(),
+            Arc::new(RwLock::new(test_bundle(tmp.path().to_path_buf()))),
             Arc::new(RwLock::new("http://127.0.0.1:9".into())),
         );
         let tid = Uuid::new_v4();
@@ -207,8 +244,10 @@ mod tests {
     #[tokio::test]
     async fn concurrent_start_delete_is_idempotent() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().join("threads");
-        let eng = ThreadDeleteEngine::new(root, Arc::new(RwLock::new("http://127.0.0.1:9".into())));
+        let eng = ThreadDeleteEngine::new(
+            Arc::new(RwLock::new(test_bundle(tmp.path().to_path_buf()))),
+            Arc::new(RwLock::new("http://127.0.0.1:9".into())),
+        );
         let tid = Uuid::new_v4();
 
         let mut handles = Vec::new();

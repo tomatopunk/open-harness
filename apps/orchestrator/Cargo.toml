@@ -27,6 +27,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 state-abstraction = { path = "../../crates/state-abstraction" }
+storage-registry = { path = "../../crates/storage-registry" }
 orchestrator-core = { path = "../../crates/orchestrator-core" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 sandbox-runtime = { path = "../../crates/sandbox-runtime" }

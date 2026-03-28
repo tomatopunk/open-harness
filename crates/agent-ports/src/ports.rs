@@ -190,6 +190,12 @@ pub trait CheckpointPort: Send + Sync {
         run_id: RunId,
         step_seq: StepSeq,
     ) -> PortResult<Option<CheckpointRecord>>;
+    /// All steps that have a persisted checkpoint for this thread/run (ascending). Time-travel / debug listing.
+    async fn list_steps_for_run(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> PortResult<Vec<StepSeq>>;
 }
 
 #[async_trait]

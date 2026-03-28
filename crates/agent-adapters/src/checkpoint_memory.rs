@@ -40,4 +40,19 @@ impl CheckpointPort for MemoryCheckpointAdapter {
             .and_then(|v| v.iter().find(|r| r.step_seq == step_seq))
             .cloned())
     }
+
+    async fn list_steps_for_run(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> agent_ports::PortResult<Vec<StepSeq>> {
+        let g = self.inner.read();
+        let mut steps: Vec<StepSeq> = g
+            .get(&(thread_id, run_id))
+            .map(|v| v.iter().map(|r| r.step_seq).collect())
+            .unwrap_or_default();
+        steps.sort_by_key(|s| s.0);
+        steps.dedup_by_key(|s| s.0);
+        Ok(steps)
+    }
 }

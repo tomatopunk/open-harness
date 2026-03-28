@@ -1,0 +1,28 @@
+[package]
+name = "storage-registry"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Unified storage registry builder for open-harness backends"
+
+[dependencies]
+config-runtime = { path = "../config-runtime" }
+state-abstraction = { path = "../state-abstraction" }
+storage-sqlite = { path = "../storage-sqlite" }
+storage-postgres = { path = "../storage-postgres" }
+storage-redis = { path = "../storage-redis" }
+storage-s3 = { path = "../storage-s3" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+
+[dev-dependencies]
+agent-ports = { path = "../agent-ports" }
+chrono = { workspace = true }
+graph-runtime-core = { path = "../graph-runtime-core" }
+object_store = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { workspace = true }

@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+agent-ports = { path = "../agent-ports" }
+storage-common = { path = "../storage-common" }
 state-abstraction = { path = "../state-abstraction" }
 async-trait = { workspace = true }
 redis = { workspace = true }

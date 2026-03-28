@@ -1,16 +1,23 @@
 use agent_ports::{CheckpointRecord, RunId, StepSeq, ThreadId};
 use async_trait::async_trait;
 use chrono::Utc;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use tokio::fs;
 use uuid::Uuid;
 
+use crate::delete_thread_report::{
+    DeleteConsistencyLevel, DeleteThreadPhase, DeleteThreadReport, DeleteThreadStatus,
+    DeleteVerifyReport,
+};
 use crate::path_safety::sanitize_thread_id;
 use crate::traits::{
-    ArtifactStore, CheckpointStore, ManageTaskRecord, ManageTaskStore, MemoryStore,
-    SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask,
-    SubagentTaskStore, ThreadMeta, ThreadMetaStore, ToolRecord, ToolRecordStore,
+    ArtifactStore, CheckpointStore, ManageAppConfig, ManageConfigStore, ManageTaskRecord,
+    ManageTaskStore, McpConfigStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
+    SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore, ThreadLifecycleStore,
+    ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord, ToolRecordStore,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct LocalFsStateStore {
@@ -80,6 +87,51 @@ impl LocalFsStateStore {
 
     fn artifact_path(&self, thread_id: Uuid, name: &str) -> PathBuf {
         self.root.join("artifacts").join(thread_id.to_string()).join(name)
+    }
+
+    fn uploads_dir(&self, thread_id: Uuid) -> PathBuf {
+        self.root.join("uploads").join(thread_id.to_string())
+    }
+
+    fn upload_path(&self, thread_id: Uuid, filename: &str) -> PathBuf {
+        self.uploads_dir(thread_id).join(filename)
+    }
+
+    fn manage_app_config_path(&self) -> PathBuf {
+        self.root.join("config").join("manage_app.json")
+    }
+
+    fn thread_ops_last_path(&self, thread_id: Uuid) -> PathBuf {
+        self.root.join("state").join("thread_ops").join(thread_id.to_string()).join("last.json")
+    }
+
+    async fn persist_lifecycle_audit_local_fs(
+        &self,
+        report: &DeleteThreadReport,
+    ) -> Result<(), StateError> {
+        let path = self.thread_ops_last_path(report.thread_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| StateError::Backend(format!("mkdir thread_ops: {e}")))?;
+        }
+        let bytes = serde_json::to_vec_pretty(report)
+            .map_err(|e| StateError::Backend(format!("audit json: {e}")))?;
+        fs::write(&path, bytes)
+            .await
+            .map_err(|e| StateError::Backend(format!("write audit: {e}")))?;
+        Ok(())
+    }
+
+    async fn delete_thread_meta_if_present(&self, thread_id: Uuid) -> Result<(), StateError> {
+        let path = self.thread_meta_path();
+        let mut items = self.read_json_vec::<ThreadMeta>(&path).await?;
+        let before = items.len();
+        items.retain(|m| m.thread_id != thread_id);
+        if items.len() == before {
+            return Ok(());
+        }
+        self.write_json(&path, &items).await
     }
 
     async fn read_json_vec<T: for<'de> serde::Deserialize<'de>>(
@@ -186,6 +238,33 @@ impl CheckpointStore for LocalFsStateStore {
             Err(e) => Err(StateError::Backend(format!("read {}: {e}", path.display()))),
         }
     }
+
+    async fn list_checkpoint_steps_for_run(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> Result<Vec<StepSeq>, StateError> {
+        let dir = self.checkpoint_steps_dir(thread_id, run_id);
+        let mut rd = match fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StateError::Backend(format!("read checkpoint steps dir: {e}"))),
+        };
+        let mut steps = Vec::new();
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let name = ent.file_name();
+            let s = name.to_string_lossy();
+            let Some(num) = s.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(v) = num.parse::<u64>() else {
+                continue;
+            };
+            steps.push(StepSeq(v));
+        }
+        steps.sort_by_key(|s| s.0);
+        Ok(steps)
+    }
 }
 
 #[async_trait]
@@ -207,19 +286,82 @@ impl ArtifactStore for LocalFsStateStore {
             .map_err(|e| StateError::Backend(format!("write {}: {e}", path.display())))?;
         Ok(path.to_string_lossy().to_string())
     }
+
+    async fn get_artifact(
+        &self,
+        thread_id: Uuid,
+        name: &str,
+    ) -> Result<Option<Vec<u8>>, StateError> {
+        let path = self.artifact_path(thread_id, name);
+        match fs::read(&path).await {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StateError::Backend(format!("read {}: {e}", path.display()))),
+        }
+    }
 }
 
 #[async_trait]
 impl MemoryStore for LocalFsStateStore {
-    async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
+    async fn load_memory_document(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::memory_document::MemoryDocument, StateError> {
         let path = self.memory_path(thread_id);
-        let mut items = self.read_json_vec::<String>(&path).await?;
-        items.push(fact.to_string());
-        self.write_json(&path, &items).await
+        match fs::read(&path).await {
+            Ok(bytes) => {
+                let s = String::from_utf8(bytes)
+                    .map_err(|e| StateError::Backend(format!("memory utf8: {e}")))?;
+                crate::memory_document::decode_memory_json_str(&s).map_err(StateError::Backend)
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                Ok(crate::memory_document::MemoryDocument::default())
+            }
+            Err(e) => Err(StateError::Backend(format!("read memory: {e}"))),
+        }
     }
 
-    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
-        self.read_json_vec::<String>(&self.memory_path(thread_id)).await
+    async fn save_memory_document(
+        &self,
+        thread_id: Uuid,
+        doc: &crate::memory_document::MemoryDocument,
+    ) -> Result<(), StateError> {
+        let path = self.memory_path(thread_id);
+        if !doc.has_any_content() {
+            match fs::remove_file(&path).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("remove memory: {e}"))),
+            }
+        } else {
+            self.write_json(&path, doc).await
+        }
+    }
+
+    async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError> {
+        let dir = self.root.join("memory");
+        let mut rd = match fs::read_dir(dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StateError::Backend(format!("read memory dir: {e}"))),
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            let name = ent.file_name();
+            let Some(s) = name.to_str() else {
+                continue;
+            };
+            let Some(id) = s.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(u) = Uuid::parse_str(id) else {
+                continue;
+            };
+            if self.load_memory_document(u).await?.has_any_content() {
+                out.push(u);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -365,6 +507,274 @@ impl ManageTaskStore for LocalFsStateStore {
     }
 }
 
+#[async_trait]
+impl McpConfigStore for LocalFsStateStore {
+    async fn get_mcp_servers(&self) -> Result<serde_json::Value, StateError> {
+        let path = self.root.join("config").join("mcp_servers.json");
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| StateError::Backend(format!("mcp json decode: {e}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+            Err(e) => Err(StateError::Backend(format!("read mcp config: {e}"))),
+        }
+    }
+
+    async fn put_mcp_servers(&self, value: &serde_json::Value) -> Result<(), StateError> {
+        let path = self.root.join("config").join("mcp_servers.json");
+        self.write_json(&path, value).await
+    }
+}
+
+#[async_trait]
+impl ThreadUploadStore for LocalFsStateStore {
+    async fn list_upload_filenames(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
+        let dir = self.uploads_dir(thread_id);
+        let mut rd = match fs::read_dir(&dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StateError::Backend(format!("read uploads dir: {e}"))),
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(ent)) = rd.next_entry().await {
+            if let Ok(ft) = ent.file_type().await {
+                if ft.is_file() {
+                    if let Some(name) = ent.file_name().to_str() {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    async fn put_upload(
+        &self,
+        thread_id: Uuid,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<(), StateError> {
+        let path = self.upload_path(thread_id, filename);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| StateError::Backend(format!("mkdir {}: {e}", parent.display())))?;
+        }
+        fs::write(&path, bytes)
+            .await
+            .map_err(|e| StateError::Backend(format!("write upload: {e}")))?;
+        Ok(())
+    }
+
+    async fn get_upload(
+        &self,
+        thread_id: Uuid,
+        filename: &str,
+    ) -> Result<Option<Vec<u8>>, StateError> {
+        let path = self.upload_path(thread_id, filename);
+        match fs::read(&path).await {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StateError::Backend(format!("read upload: {e}"))),
+        }
+    }
+
+    async fn delete_upload(&self, thread_id: Uuid, filename: &str) -> Result<(), StateError> {
+        let path = self.upload_path(thread_id, filename);
+        match fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StateError::Backend(format!("remove upload: {e}"))),
+        }
+    }
+}
+
+#[async_trait]
+impl ManageConfigStore for LocalFsStateStore {
+    async fn get_manage_app_config(&self) -> Result<ManageAppConfig, StateError> {
+        let path = self.manage_app_config_path();
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| StateError::Backend(format!("manage_app json: {e}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ManageAppConfig::default()),
+            Err(e) => Err(StateError::Backend(format!("read manage_app: {e}"))),
+        }
+    }
+
+    async fn put_manage_app_config(&self, cfg: &ManageAppConfig) -> Result<(), StateError> {
+        self.write_json(&self.manage_app_config_path(), cfg).await
+    }
+}
+
+#[async_trait]
+impl ThreadLifecycleStore for LocalFsStateStore {
+    async fn delete_thread_cascade_report(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<DeleteThreadReport, StateError> {
+        let operation_id = Uuid::new_v4();
+        let tid = thread_id;
+        let consistency = DeleteConsistencyLevel::BestEffort;
+        let mut completed = Vec::new();
+
+        macro_rules! phase {
+            ($p:expr, $f:expr) => {
+                if let Err(e) = $f.await {
+                    let r = DeleteThreadReport {
+                        operation_id,
+                        thread_id: tid,
+                        status: DeleteThreadStatus::Partial { failed_at: $p, error: e.to_string() },
+                        completed_phases: completed.clone(),
+                        consistency,
+                        retryable: true,
+                    };
+                    let _ = self.persist_lifecycle_audit_local_fs(&r).await;
+                    return Ok(r);
+                }
+                completed.push($p);
+            };
+        }
+
+        let cp_root = self.root.join("state").join("checkpoints").join(tid.to_string());
+        phase!(DeleteThreadPhase::Checkpoints, async {
+            match fs::remove_dir_all(&cp_root).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("checkpoints: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::Memory, async {
+            match fs::remove_file(self.memory_path(tid)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("memory: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::Tools, async {
+            match fs::remove_file(self.tools_path(tid)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("tools: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::Subagents, async {
+            match fs::remove_file(self.subagent_path(tid)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("subagents: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::Sandbox, async {
+            match fs::remove_file(self.sandbox_path(tid)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("sandbox: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::ManageTasks, async {
+            match fs::remove_file(self.manage_task_path(&tid.to_string())).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("manage_tasks: {e}"))),
+            }
+        });
+
+        let art_dir = self.root.join("artifacts").join(tid.to_string());
+        phase!(DeleteThreadPhase::Artifacts, async {
+            match fs::remove_dir_all(&art_dir).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("artifacts: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::Uploads, async {
+            match fs::remove_dir_all(self.uploads_dir(tid)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(StateError::Backend(format!("uploads: {e}"))),
+            }
+        });
+
+        phase!(DeleteThreadPhase::ThreadMeta, async {
+            self.delete_thread_meta_if_present(tid).await
+        });
+
+        let r = DeleteThreadReport {
+            operation_id,
+            thread_id: tid,
+            status: DeleteThreadStatus::Complete,
+            completed_phases: completed,
+            consistency,
+            retryable: true,
+        };
+        self.persist_lifecycle_audit_local_fs(&r).await?;
+        Ok(r)
+    }
+
+    async fn last_delete_thread_report(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<Option<DeleteThreadReport>, StateError> {
+        let path = self.thread_ops_last_path(thread_id);
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| StateError::Backend(format!("audit decode: {e}")))
+                .map(Some),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StateError::Backend(format!("read audit: {e}"))),
+        }
+    }
+
+    async fn verify_thread_deletion(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<DeleteVerifyReport, StateError> {
+        let tid = thread_id;
+        let mut residual_by_phase = HashMap::new();
+        let cp = self.root.join("state").join("checkpoints").join(tid.to_string());
+        residual_by_phase.insert(
+            DeleteThreadPhase::Checkpoints,
+            fs::metadata(&cp).await.map(|m| m.is_dir()).unwrap_or(false),
+        );
+        residual_by_phase
+            .insert(DeleteThreadPhase::Memory, fs::metadata(self.memory_path(tid)).await.is_ok());
+        residual_by_phase
+            .insert(DeleteThreadPhase::Tools, fs::metadata(self.tools_path(tid)).await.is_ok());
+        residual_by_phase.insert(
+            DeleteThreadPhase::Subagents,
+            fs::metadata(self.subagent_path(tid)).await.is_ok(),
+        );
+        residual_by_phase
+            .insert(DeleteThreadPhase::Sandbox, fs::metadata(self.sandbox_path(tid)).await.is_ok());
+        residual_by_phase.insert(
+            DeleteThreadPhase::ManageTasks,
+            fs::metadata(self.manage_task_path(&tid.to_string())).await.is_ok(),
+        );
+        let art = self.root.join("artifacts").join(tid.to_string());
+        residual_by_phase.insert(
+            DeleteThreadPhase::Artifacts,
+            fs::metadata(&art).await.map(|m| m.is_dir()).unwrap_or(false),
+        );
+        residual_by_phase.insert(
+            DeleteThreadPhase::Uploads,
+            fs::metadata(self.uploads_dir(tid)).await.map(|m| m.is_dir()).unwrap_or(false),
+        );
+        let in_meta = self
+            .read_json_vec::<ThreadMeta>(&self.thread_meta_path())
+            .await
+            .map(|v| v.iter().any(|m| m.thread_id == tid))
+            .unwrap_or(false);
+        residual_by_phase.insert(DeleteThreadPhase::ThreadMeta, in_meta);
+        Ok(DeleteVerifyReport { thread_id: tid, residual_by_phase })
+    }
+}
+
 impl Default for LocalFsStateStore {
     fn default() -> Self {
         Self::new(".deer-flow/local-fs")
@@ -378,12 +788,31 @@ pub fn now_utc() -> chrono::DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::ManageTaskStore;
+    use crate::traits::{
+        ManageTaskStore, ThreadLifecycleStore, ThreadMetaStore, ThreadUploadStore,
+    };
 
     fn test_store() -> LocalFsStateStore {
         let root =
             std::env::temp_dir().join(format!("open-harness-local-fs-store-{}", Uuid::new_v4()));
         LocalFsStateStore::new(root)
+    }
+
+    #[tokio::test]
+    async fn delete_thread_cascade_removes_thread_scoped_data() {
+        let store = test_store();
+        let tid = Uuid::new_v4();
+        let meta = ThreadMeta {
+            thread_id: tid,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            label: None,
+        };
+        ThreadMetaStore::upsert_thread(&store, &meta).await.unwrap();
+        store.put_upload(tid, "a.txt", b"hello").await.unwrap();
+        ThreadLifecycleStore::delete_thread_cascade(&store, tid).await.unwrap();
+        assert!(ThreadMetaStore::get_thread(&store, tid).await.is_err());
+        assert!(store.get_upload(tid, "a.txt").await.unwrap().is_none());
     }
 
     #[tokio::test]

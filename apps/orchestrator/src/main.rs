@@ -9,13 +9,13 @@ use sandbox_runtime::{LocalSandbox, Sandbox, SandboxRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use state_abstraction::{
-    CheckpointStore, DynCheckpointStorePort, LocalFsLayout, LocalFsStateStore, MemoryStore,
-    SandboxExecution, SandboxExecutionStore, SkillRecord, SkillStore, SubagentTaskStore,
+    CheckpointStore, DynCheckpointStorePort, SandboxExecution, SkillRecord, StorageRegistry,
     ToolRecord, ToolRecordStore,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use storage_registry::build_runtime_storage;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -49,7 +49,7 @@ struct RuntimeRunMetadata {
 
 #[derive(Clone)]
 struct AppState {
-    store: Arc<LocalFsStateStore>,
+    registry: Arc<StorageRegistry>,
     governance: Arc<GovernanceBundle>,
     graph: Arc<GraphRuntime>,
     agent_deps: Arc<AgentLoopDeps>,
@@ -57,7 +57,7 @@ struct AppState {
 
 fn build_agent_loop_deps(
     bundle: &GovernanceBundle,
-    store: Arc<LocalFsStateStore>,
+    state_registry: Arc<StorageRegistry>,
 ) -> AgentLoopDeps {
     let mut reg = ToolRegistry::new();
     reg.register(Box::new(EchoTool));
@@ -70,9 +70,9 @@ fn build_agent_loop_deps(
     reg.ensure_consistent_with_manifest_list(&manifest_names).unwrap_or_else(|e| {
         panic!("governance tools.yaml / ToolRegistry mismatch: {e}");
     });
-    let registry = Arc::new(reg);
-    let inner = Arc::new(RegistryToolAdapter::new(registry, manifests));
-    let records: Arc<dyn ToolRecordStore> = store.clone();
+    let tool_registry = Arc::new(reg);
+    let inner = Arc::new(RegistryToolAdapter::new(tool_registry, manifests));
+    let records: Arc<dyn ToolRecordStore> = state_registry.tools.clone();
     let tools: Arc<dyn ToolPort> = Arc::new(PersistingToolPort::new(inner, records));
     let llm: Arc<dyn LLMPort> =
         if std::env::var("OPENAI_API_KEY").map(|s| !s.trim().is_empty()).unwrap_or(false) {
@@ -187,7 +187,7 @@ struct OrchestrateRequest {
 }
 
 async fn run_orchestrate_with_state(
-    axum::extract::State(AppState { store, governance, graph, agent_deps }): axum::extract::State<
+    axum::extract::State(AppState { registry, governance, graph, agent_deps }): axum::extract::State<
         AppState,
     >,
     Json(body): Json<OrchestrateRequest>,
@@ -209,17 +209,19 @@ async fn run_orchestrate_with_state(
     let thread_id = ThreadId::from(thread_uuid);
 
     for fact in &ctx.memory_facts {
-        let _ = store.append_fact(thread_uuid, fact).await;
+        let _ = registry.memory.append_fact(thread_uuid, fact).await;
     }
 
-    let _ = store
+    let _ = registry
+        .skills
         .put_skill(&SkillRecord {
             name: "research".to_string(),
             enabled: body.configurable.skills_enabled.unwrap_or(true),
         })
         .await;
 
-    let _ = store
+    let _ = registry
+        .tools
         .append_tool_record(&ToolRecord {
             thread_id: thread_uuid,
             tool_name: "orchestrate.prepare".to_string(),
@@ -239,7 +241,8 @@ async fn run_orchestrate_with_state(
             Ok(out) => (out.exit_code, out.stdout, out.stderr),
             Err(err) => (-1, String::new(), err.to_string()),
         };
-        let _ = store
+        let _ = registry
+            .sandbox
             .append_execution(&SandboxExecution {
                 execution_id: Uuid::new_v4(),
                 thread_id: thread_uuid,
@@ -253,11 +256,12 @@ async fn run_orchestrate_with_state(
         metrics::counter!("open_harness_orchestrator_sandbox_execution_total").increment(1);
     }
 
-    let facts = store.list_facts(thread_uuid).await.unwrap_or_default();
-    let tool_records = store.list_tool_records(thread_uuid).await.unwrap_or_default();
-    let subagent_records = store.list_tasks_by_thread(thread_uuid).await.unwrap_or_default();
-    let sandbox_records = store.list_executions(thread_uuid).await.unwrap_or_default();
-    let skills = store.list_skills().await.unwrap_or_default();
+    let facts = registry.memory.list_facts(thread_uuid).await.unwrap_or_default();
+    let tool_records = registry.tools.list_tool_records(thread_uuid).await.unwrap_or_default();
+    let subagent_records =
+        registry.subagents.list_tasks_by_thread(thread_uuid).await.unwrap_or_default();
+    let sandbox_records = registry.sandbox.list_executions(thread_uuid).await.unwrap_or_default();
+    let skills = registry.skills.list_skills().await.unwrap_or_default();
 
     let mut base_state = ThreadState::new(thread_id);
     base_state.governance_marks.policy_version = Some(governance.policy_version.clone());
@@ -337,22 +341,21 @@ async fn main() -> anyhow::Result<()> {
         "open_harness_orchestrator_subagent_task_total",
         "orchestrator subagent tasks persisted"
     );
-    if cfg.storage.mode == "local_fs" {
-        let layout = LocalFsLayout::new(&cfg.storage.local_fs_root);
-        let _ = layout.ensure_base_dirs();
-    }
-    let store = Arc::new(LocalFsStateStore::new(&cfg.storage.local_fs_root));
+    let storage_bundle = build_runtime_storage(&cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to initialize storage: {e}"))?;
+    let registry = Arc::new(storage_bundle.registry);
     let governance = Arc::new(
         GovernanceBundle::load_from_dir(&cfg.runtime.governance_root).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "governance load failed; using defaults");
             GovernanceBundle::default()
         }),
     );
-    let agent_deps = Arc::new(build_agent_loop_deps(governance.as_ref(), store.clone()));
-    let checkpoint_store: Arc<dyn CheckpointStore> = store.clone();
+    let agent_deps = Arc::new(build_agent_loop_deps(governance.as_ref(), registry.clone()));
+    let checkpoint_store: Arc<dyn CheckpointStore> = registry.checkpoints.clone();
     let checkpoint_port = Arc::new(DynCheckpointStorePort::new(checkpoint_store));
     let graph = Arc::new(GraphRuntime::new(checkpoint_port));
-    let app_state = AppState { store, governance, graph, agent_deps };
+    let app_state = AppState { registry, governance, graph, agent_deps };
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))

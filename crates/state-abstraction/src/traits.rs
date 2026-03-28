@@ -2,6 +2,7 @@ use agent_ports::{CheckpointRecord, RunId, StepSeq, ThreadId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -13,6 +14,9 @@ pub enum StateError {
     Conflict(String),
     #[error("backend: {0}")]
     Backend(String),
+    /// Cascade delete did not reach [`crate::delete_thread_report::DeleteThreadStatus::Complete`].
+    #[error("{0}")]
+    LifecycleIncomplete(Box<crate::delete_thread_report::DeleteThreadReport>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +104,12 @@ pub trait CheckpointStore: Send + Sync {
         run_id: RunId,
         step_seq: StepSeq,
     ) -> Result<Option<CheckpointRecord>, StateError>;
+    /// All step indices that have a checkpoint for this thread/run (sorted ascending). Used for time-travel / debug listing.
+    async fn list_checkpoint_steps_for_run(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+    ) -> Result<Vec<StepSeq>, StateError>;
 }
 
 #[async_trait]
@@ -110,12 +120,39 @@ pub trait ArtifactStore: Send + Sync {
         name: &str,
         bytes: &[u8],
     ) -> Result<String, StateError>;
+
+    async fn get_artifact(
+        &self,
+        thread_id: Uuid,
+        name: &str,
+    ) -> Result<Option<Vec<u8>>, StateError>;
 }
 
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
-    async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError>;
-    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError>;
+    /// Full structured memory (see [`crate::memory_document::MemoryDocument`]). Missing thread → empty document.
+    async fn load_memory_document(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::memory_document::MemoryDocument, StateError>;
+    async fn save_memory_document(
+        &self,
+        thread_id: Uuid,
+        doc: &crate::memory_document::MemoryDocument,
+    ) -> Result<(), StateError>;
+
+    async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
+        let mut doc = self.load_memory_document(thread_id).await?;
+        doc.facts.push(fact.to_string());
+        self.save_memory_document(thread_id, &doc).await
+    }
+
+    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
+        Ok(self.load_memory_document(thread_id).await?.facts)
+    }
+
+    /// Threads that have durable memory content (facts or structured user/history JSON).
+    async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError>;
 }
 
 #[async_trait]
@@ -152,4 +189,76 @@ pub trait ManageTaskStore: Send + Sync {
         &self,
         thread_id: &str,
     ) -> Result<Vec<ManageTaskRecord>, StateError>;
+}
+
+/// MCP server configuration persisted with other runtime state (not thread-scoped).
+#[async_trait]
+pub trait McpConfigStore: Send + Sync {
+    async fn get_mcp_servers(&self) -> Result<serde_json::Value, StateError>;
+    async fn put_mcp_servers(&self, value: &serde_json::Value) -> Result<(), StateError>;
+}
+
+/// Manage UI / routing state (agents, channels, model list metadata) — not MCP servers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ManageAppConfig {
+    /// Agent id -> definition JSON.
+    pub agents: HashMap<String, serde_json::Value>,
+    pub channels: HashMap<String, String>,
+    pub models: Vec<serde_json::Value>,
+}
+
+#[async_trait]
+pub trait ManageConfigStore: Send + Sync {
+    async fn get_manage_app_config(&self) -> Result<ManageAppConfig, StateError>;
+    async fn put_manage_app_config(&self, cfg: &ManageAppConfig) -> Result<(), StateError>;
+}
+
+/// Thread-scoped user uploads (separate from [`ArtifactStore`] engine artifacts).
+#[async_trait]
+pub trait ThreadUploadStore: Send + Sync {
+    async fn list_upload_filenames(&self, thread_id: Uuid) -> Result<Vec<String>, StateError>;
+    async fn put_upload(
+        &self,
+        thread_id: Uuid,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<(), StateError>;
+    async fn get_upload(
+        &self,
+        thread_id: Uuid,
+        filename: &str,
+    ) -> Result<Option<Vec<u8>>, StateError>;
+    async fn delete_upload(&self, thread_id: Uuid, filename: &str) -> Result<(), StateError>;
+}
+
+/// Deletes all durable state for a thread (checkpoints, memory, tools, uploads, …).
+#[async_trait]
+pub trait ThreadLifecycleStore: Send + Sync {
+    /// Structured outcome; persists an audit record where the backend supports it.
+    async fn delete_thread_cascade_report(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::delete_thread_report::DeleteThreadReport, StateError>;
+
+    /// Idempotent: missing data is not an error for individual domains; returns `Err(LifecycleIncomplete)` unless fully complete.
+    async fn delete_thread_cascade(&self, thread_id: Uuid) -> Result<(), StateError> {
+        let r = self.delete_thread_cascade_report(thread_id).await?;
+        if matches!(r.status, crate::delete_thread_report::DeleteThreadStatus::Complete) {
+            Ok(())
+        } else {
+            Err(StateError::LifecycleIncomplete(Box::new(r)))
+        }
+    }
+
+    /// Last persisted delete report for this thread, if any.
+    async fn last_delete_thread_report(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<Option<crate::delete_thread_report::DeleteThreadReport>, StateError>;
+
+    /// Best-effort residual check per domain (may be expensive on object stores).
+    async fn verify_thread_deletion(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::delete_thread_report::DeleteVerifyReport, StateError>;
 }

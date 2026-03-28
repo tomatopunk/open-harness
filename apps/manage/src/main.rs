@@ -17,14 +17,9 @@ use runtime_kernel::{McpServerConfig, SkillsRuntime};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_yaml::Value as YamlValue;
-use state_abstraction::{
-    LocalFsStateStore, ManageTaskStore, MemoryStore, SkillRecord, SkillStore, StorageBackendKind,
-};
+use state_abstraction::{ManageAppConfig, SkillRecord};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use storage_postgres::PostgresManageTaskStore;
-use storage_redis::RedisManageTaskStore;
-use storage_s3::build_s3_manage_store;
-use storage_sqlite::SqliteManageTaskStore;
+use storage_registry::{build_runtime_storage, RuntimeStorageBundle};
 use tokio::sync::RwLock;
 use tokio_util::task::TaskTracker;
 use tower_http::trace::TraceLayer;
@@ -44,11 +39,12 @@ use thread_delete::ThreadDeleteEngine;
 #[derive(Clone)]
 struct AppState {
     delete_engine: Arc<ThreadDeleteEngine>,
-    threads_root: PathBuf,
+    /// Legacy layout root (local_fs only); used for memory config hint.
     local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
-    storage: Arc<LocalFsStateStore>,
-    storage_runtime: Arc<RwLock<StorageRuntime>>,
+    /// Unified runtime storage (all backends).
+    runtime: Arc<RwLock<RuntimeStorageBundle>>,
+    last_switch_ts: Arc<RwLock<i64>>,
     tasks: Arc<dashmap::DashMap<String, TaskRecord>>,
     task_capacity: usize,
     langgraph_url: Arc<RwLock<String>>,
@@ -56,16 +52,7 @@ struct AppState {
     webhook_secret: Option<String>,
     auth_state: SharedAuthState,
     task_workers: TaskTracker,
-    skills_install_dir: PathBuf,
     governance: Arc<GovernanceBundle>,
-}
-
-#[derive(Clone)]
-struct StorageRuntime {
-    active_mode: String,
-    manage_tasks: Arc<dyn ManageTaskStore>,
-    capabilities: serde_json::Value,
-    last_switch_ts: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,8 +90,6 @@ async fn main() -> anyhow::Result<()> {
     } else {
         PathBuf::from(&cfg.manage.threads_root)
     };
-    let threads_root = local_fs_root.join("threads");
-    std::fs::create_dir_all(&threads_root).ok();
     if use_local_fs {
         std::fs::create_dir_all(local_fs_root.join("config")).ok();
         std::fs::create_dir_all(local_fs_root.join("tasks")).ok();
@@ -114,7 +99,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let langgraph_url = Arc::new(RwLock::new(cfg.manage.langgraph_url.clone()));
-    let delete_engine = ThreadDeleteEngine::new(threads_root.clone(), langgraph_url.clone());
 
     let prom = PrometheusBuilder::new().install_recorder().expect("prometheus recorder");
     metrics::describe_counter!("open_harness_manage_requests_total", "Manage API requests");
@@ -144,9 +128,37 @@ async fn main() -> anyhow::Result<()> {
         "Manage storage switch failed operations"
     );
 
-    let channels =
-        configured_channels(&cfg).into_iter().map(|name| (name, "running".to_string())).collect();
-    let storage = Arc::new(LocalFsStateStore::new(local_fs_root.clone()));
+    let runtime_bundle = build_runtime_storage(&cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to initialize storage: {e}"))?;
+    let mcp_from_store =
+        runtime_bundle.registry.mcp_config.get_mcp_servers().await.unwrap_or_else(|_| json!({}));
+    let manage_app =
+        runtime_bundle.registry.manage_config.get_manage_app_config().await.unwrap_or_default();
+    let channels: std::collections::HashMap<String, String> = if manage_app.channels.is_empty() {
+        configured_channels(&cfg).into_iter().map(|name| (name, "running".to_string())).collect()
+    } else {
+        manage_app.channels.clone()
+    };
+    let models_from_persist: Vec<ModelInfo> =
+        manage_app.models.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect();
+    let models = if models_from_persist.is_empty() {
+        cfg.models
+            .iter()
+            .map(|m| ModelInfo {
+                name: m.name.clone(),
+                model: m.model.clone(),
+                display_name: m.display_name.clone(),
+                description: format!("provider: {}", m.use_provider),
+                supports_thinking: false,
+                supports_reasoning_effort: false,
+            })
+            .collect()
+    } else {
+        models_from_persist
+    };
+    let runtime = Arc::new(RwLock::new(runtime_bundle));
+    let delete_engine = ThreadDeleteEngine::new(Arc::clone(&runtime), langgraph_url.clone());
     let auth_settings = auth_settings_from_config(
         cfg.manage.auth.enabled,
         cfg.manage.auth.api_keys.clone(),
@@ -164,15 +176,9 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         delete_engine,
-        threads_root: threads_root.clone(),
         local_fs_root: local_fs_root.clone(),
-        storage: storage.clone(),
-        storage_runtime: Arc::new(RwLock::new(StorageRuntime {
-            active_mode: cfg.storage.mode.clone(),
-            manage_tasks: storage.clone(),
-            capabilities: storage_capabilities("local_fs"),
-            last_switch_ts: now_ts(),
-        })),
+        runtime,
+        last_switch_ts: Arc::new(RwLock::new(now_ts())),
         tasks: Arc::new(dashmap::DashMap::new()),
         task_capacity: 1000,
         langgraph_url,
@@ -180,24 +186,12 @@ async fn main() -> anyhow::Result<()> {
         webhook_secret: cfg.manage.webhook_secret.clone(),
         auth_state: auth_state.clone(),
         task_workers: TaskTracker::new(),
-        skills_install_dir: local_fs_root.join("skills"),
         governance,
         store: Arc::new(RwLock::new(ManageStore {
-            mcp_servers: json!({}),
-            agents: HashMap::new(),
+            mcp_servers: mcp_from_store,
+            agents: manage_app.agents,
             channels,
-            models: cfg
-                .models
-                .iter()
-                .map(|m| ModelInfo {
-                    name: m.name.clone(),
-                    model: m.model.clone(),
-                    display_name: m.display_name.clone(),
-                    description: format!("provider: {}", m.use_provider),
-                    supports_thinking: false,
-                    supports_reasoning_effort: false,
-                })
-                .collect(),
+            models,
             storage_mode: cfg.storage.mode.clone(),
         })),
     };
@@ -241,6 +235,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/channels/", get(get_channels))
         .route("/api/channels/:name/restart", post(restart_channel))
         .route("/api/manage/threads/:thread_id", axum::routing::delete(delete_thread))
+        .route("/api/manage/threads/:thread_id/lifecycle/last-delete", get(get_last_delete_report))
+        .route(
+            "/api/manage/threads/:thread_id/lifecycle/retry-delete",
+            post(retry_delete_thread_lifecycle),
+        )
+        .route("/api/manage/threads/:thread_id/lifecycle/verify", post(verify_thread_lifecycle))
         .route("/api/manage/thread-delete-ops/:operation_id", get(get_delete_op))
         .route("/api/manage/threads/:thread_id/tasks", post(dispatch_task))
         .route("/api/manage/tasks/:task_id", get(get_task))
@@ -325,6 +325,51 @@ async fn get_delete_op(
     }
 }
 
+/// Last persisted [`state_abstraction::DeleteThreadReport`] for this thread (backend-specific audit).
+async fn get_last_delete_report(
+    State(st): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+) -> impl IntoResponse {
+    metrics::counter!("open_harness_manage_requests_total").increment(1);
+    let rt = st.runtime.read().await;
+    match rt.registry.lifecycle.last_delete_thread_report(thread_id).await {
+        Ok(Some(r)) => (StatusCode::OK, Json(json!(r))).into_response(),
+        Ok(None) => {
+            (StatusCode::NOT_FOUND, Json(json!({"error": "no_delete_report"}))).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            .into_response(),
+    }
+}
+
+/// Idempotent retry of cascade delete; returns structured report (may be partial).
+async fn retry_delete_thread_lifecycle(
+    State(st): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+) -> impl IntoResponse {
+    metrics::counter!("open_harness_manage_requests_total").increment(1);
+    let rt = st.runtime.read().await;
+    match rt.registry.lifecycle.delete_thread_cascade_report(thread_id).await {
+        Ok(r) => (StatusCode::OK, Json(json!(r))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            .into_response(),
+    }
+}
+
+/// Best-effort per-domain residual probe for the current storage backend.
+async fn verify_thread_lifecycle(
+    State(st): State<AppState>,
+    Path(thread_id): Path<Uuid>,
+) -> impl IntoResponse {
+    metrics::counter!("open_harness_manage_requests_total").increment(1);
+    let rt = st.runtime.read().await;
+    match rt.registry.lifecycle.verify_thread_deletion(thread_id).await {
+        Ok(r) => (StatusCode::OK, Json(json!(r))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))
+            .into_response(),
+    }
+}
+
 fn auth_settings_from_config(
     enabled: bool,
     api_keys: Vec<String>,
@@ -337,13 +382,44 @@ fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-fn sqlite_connect_url(cfg: &config_runtime::AppConfig) -> Option<String> {
-    let u = cfg.storage.sqlite_url.clone().or(cfg.manage.sqlite_url.clone())?;
-    Some(if u.starts_with("sqlite:") {
-        u
-    } else {
-        format!("sqlite://{}", u.trim_start_matches('/'))
-    })
+async fn persist_manage_app(st: &AppState) {
+    let s = st.store.read().await;
+    let cfg = ManageAppConfig {
+        agents: s.agents.clone(),
+        channels: s.channels.clone(),
+        models: s
+            .models
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap_or_else(|_| json!({})))
+            .collect(),
+    };
+    drop(s);
+    if let Err(e) = st.runtime.read().await.registry.manage_config.put_manage_app_config(&cfg).await
+    {
+        tracing::warn!(error = %e, "persist manage_app failed");
+    }
+}
+
+async fn sync_manage_store_from_runtime(st: &AppState) {
+    let rt = st.runtime.read().await;
+    let mac = rt.registry.manage_config.get_manage_app_config().await.unwrap_or_default();
+    let mcp = rt.registry.mcp_config.get_mcp_servers().await.unwrap_or_else(|_| json!({}));
+    let mode = rt.active_mode.clone();
+    drop(rt);
+    let mut w = st.store.write().await;
+    w.mcp_servers = mcp;
+    w.agents = mac.agents;
+    if !mac.channels.is_empty() {
+        w.channels = mac.channels;
+    }
+    if !mac.models.is_empty() {
+        w.models = mac
+            .models
+            .iter()
+            .filter_map(|v| serde_json::from_value::<ModelInfo>(v.clone()).ok())
+            .collect();
+    }
+    w.storage_mode = mode;
 }
 
 #[derive(Debug, Deserialize)]
@@ -367,23 +443,49 @@ async fn storage_switch(
 ) -> impl IntoResponse {
     metrics::counter!("open_harness_manage_storage_switch_total").increment(1);
     let requested_backend = body.backend;
-    let backend = StorageBackendKind::from_mode(&requested_backend);
+    let valid =
+        matches!(requested_backend.as_str(), "local_fs" | "sqlite" | "postgres" | "redis" | "s3");
+    if !valid {
+        metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
+        let rt = st.runtime.read().await;
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(StorageSwitchResponse {
+                requested_backend,
+                active_backend: rt.active_mode.clone(),
+                applied: false,
+                persisted: false,
+                capabilities: rt.capabilities.clone(),
+                reason: Some("invalid backend (use local_fs|sqlite|postgres|redis|s3)".into()),
+            }),
+        );
+    }
+
     let (applied, active_backend, capabilities, reason) =
-        match switch_runtime_storage(&st, backend).await {
-            Ok(out) => out,
+        match switch_runtime_storage(&st, &requested_backend).await {
+            Ok(out) => (true, out.0, out.1, None),
             Err(msg) => {
                 metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
-                let rt = st.storage_runtime.read().await;
+                let rt = st.runtime.read().await;
                 (false, rt.active_mode.clone(), rt.capabilities.clone(), Some(msg))
             }
         };
 
-    let persisted =
-        if applied { persist_storage_mode_to_config(&active_backend).is_ok() } else { false };
+    let persisted = applied;
 
     if applied {
+        let mcp = st
+            .runtime
+            .read()
+            .await
+            .registry
+            .mcp_config
+            .get_mcp_servers()
+            .await
+            .unwrap_or_else(|_| json!({}));
         let mut s = st.store.write().await;
         s.storage_mode = active_backend.clone();
+        s.mcp_servers = mcp;
     }
     (
         StatusCode::OK,
@@ -400,175 +502,18 @@ async fn storage_switch(
 
 async fn switch_runtime_storage(
     st: &AppState,
-    backend: StorageBackendKind,
-) -> Result<(bool, String, serde_json::Value, Option<String>), String> {
-    match backend {
-        StorageBackendKind::LocalFs => {
-            let mut rt = st.storage_runtime.write().await;
-            rt.active_mode = "local_fs".to_string();
-            rt.manage_tasks = st.storage.clone();
-            rt.capabilities = storage_capabilities("local_fs");
-            rt.last_switch_ts = now_ts();
-            Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
-        }
-        StorageBackendKind::Postgres => {
-            let cfg = load_cached_or_default();
-            let postgres_url =
-                cfg.storage.postgres_url.or(cfg.manage.postgres_url).ok_or_else(|| {
-                    "postgres_url is missing in storage/manage config".to_string()
-                })?;
-            let pg = PostgresManageTaskStore::connect(&postgres_url)
-                .await
-                .map_err(|e| format!("postgres connect failed: {e}"))?;
-            let mut rt = st.storage_runtime.write().await;
-            rt.active_mode = "postgres".to_string();
-            rt.manage_tasks = Arc::new(pg);
-            rt.capabilities = storage_capabilities("postgres");
-            rt.last_switch_ts = now_ts();
-            Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
-        }
-        StorageBackendKind::Sqlite => {
-            let cfg = load_cached_or_default();
-            let url = sqlite_connect_url(&cfg)
-                .ok_or_else(|| "sqlite_url is missing in storage/manage config".to_string())?;
-            let mut rt = st.storage_runtime.write().await;
-            rt.active_mode = "sqlite".to_string();
-            rt.capabilities = storage_capabilities("sqlite");
-            rt.last_switch_ts = now_ts();
-            match SqliteManageTaskStore::connect(&url).await {
-                Ok(sqlite) => {
-                    rt.manage_tasks = Arc::new(sqlite);
-                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "sqlite manage_tasks unavailable; fallback local_fs");
-                    rt.manage_tasks = st.storage.clone();
-                    Ok((
-                        true,
-                        rt.active_mode.clone(),
-                        rt.capabilities.clone(),
-                        Some(format!(
-                            "sqlite connect failed ({e}); using local_fs manage_tasks (deterministic fallback)"
-                        )),
-                    ))
-                }
-            }
-        }
-        StorageBackendKind::Redis => {
-            let cfg = load_cached_or_default();
-            let redis_url = cfg
-                .storage
-                .redis_url
-                .clone()
-                .ok_or_else(|| "redis_url is missing in storage config".to_string())?;
-            let mut rt = st.storage_runtime.write().await;
-            rt.active_mode = "redis".to_string();
-            rt.capabilities = storage_capabilities("redis");
-            rt.last_switch_ts = now_ts();
-            match RedisManageTaskStore::connect(&redis_url).await {
-                Ok(redis_store) => {
-                    rt.manage_tasks = Arc::new(redis_store);
-                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "redis manage_tasks unavailable; fallback local_fs");
-                    rt.manage_tasks = st.storage.clone();
-                    Ok((
-                        true,
-                        rt.active_mode.clone(),
-                        rt.capabilities.clone(),
-                        Some(format!(
-                            "redis connect failed ({e}); using local_fs manage_tasks (deterministic fallback)"
-                        )),
-                    ))
-                }
-            }
-        }
-        StorageBackendKind::S3 => {
-            let cfg = load_cached_or_default();
-            let bucket = cfg
-                .storage
-                .s3_bucket
-                .clone()
-                .ok_or_else(|| "s3_bucket is missing in storage config".to_string())?;
-            let prefix = cfg.storage.s3_prefix.clone();
-            let mut rt = st.storage_runtime.write().await;
-            rt.active_mode = "s3".to_string();
-            rt.capabilities = storage_capabilities("s3");
-            rt.last_switch_ts = now_ts();
-            match build_s3_manage_store(&bucket, prefix) {
-                Ok(s3_store) => {
-                    rt.manage_tasks = Arc::new(s3_store);
-                    Ok((true, rt.active_mode.clone(), rt.capabilities.clone(), None))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "s3 manage_tasks unavailable; fallback local_fs");
-                    rt.manage_tasks = st.storage.clone();
-                    Ok((
-                        true,
-                        rt.active_mode.clone(),
-                        rt.capabilities.clone(),
-                        Some(format!(
-                            "s3 init failed ({e}); using local_fs manage_tasks (deterministic fallback)"
-                        )),
-                    ))
-                }
-            }
-        }
-    }
-}
-
-fn storage_capabilities(mode: &str) -> serde_json::Value {
-    match mode {
-        "postgres" => json!({
-            "manage_tasks": true,
-            "memory": false,
-            "skills": false,
-            "tool_records": false,
-            "subagent_tasks": false,
-            "sandbox_logs": false
-        }),
-        "sqlite" => json!({
-            "manage_tasks": true,
-            "memory": true,
-            "skills": true,
-            "tool_records": true,
-            "subagent_tasks": true,
-            "sandbox_logs": true
-        }),
-        "redis" => json!({
-            "manage_tasks": true,
-            "memory": true,
-            "skills": true,
-            "tool_records": false,
-            "subagent_tasks": false,
-            "sandbox_logs": false
-        }),
-        "s3" => json!({
-            "manage_tasks": true,
-            "memory": false,
-            "skills": true,
-            "tool_records": false,
-            "subagent_tasks": false,
-            "sandbox_logs": true
-        }),
-        "local_fs" => json!({
-            "manage_tasks": true,
-            "memory": true,
-            "skills": true,
-            "tool_records": true,
-            "subagent_tasks": true,
-            "sandbox_logs": true
-        }),
-        _ => json!({
-            "manage_tasks": false,
-            "memory": false,
-            "skills": false,
-            "tool_records": false,
-            "subagent_tasks": false,
-            "sandbox_logs": false
-        }),
-    }
+    mode: &str,
+) -> Result<(String, serde_json::Value), String> {
+    persist_storage_mode_to_config(mode).map_err(|e| e.to_string())?;
+    reload_cached().map_err(|e| e.to_string())?;
+    let cfg = load_cached_or_default();
+    let bundle = build_runtime_storage(&cfg).await.map_err(|e| e.to_string())?;
+    let active = bundle.active_mode.clone();
+    let caps = bundle.capabilities.clone();
+    *st.runtime.write().await = bundle;
+    *st.last_switch_ts.write().await = now_ts();
+    sync_manage_store_from_runtime(st).await;
+    Ok((active, caps))
 }
 
 #[derive(Debug, Serialize)]
@@ -579,13 +524,14 @@ struct StorageStatusResponse {
 }
 
 async fn storage_status(State(st): State<AppState>) -> impl IntoResponse {
-    let rt = st.storage_runtime.read().await;
+    let rt = st.runtime.read().await;
+    let last_switch_ts = *st.last_switch_ts.read().await;
     (
         StatusCode::OK,
         Json(StorageStatusResponse {
             active_backend: rt.active_mode.clone(),
             capabilities: rt.capabilities.clone(),
-            last_switch_ts: rt.last_switch_ts,
+            last_switch_ts,
         }),
     )
 }
@@ -649,8 +595,8 @@ async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
             let storage_mode = cfg.storage.mode.clone();
             store.storage_mode = storage_mode.clone();
             drop(store);
-            let backend = StorageBackendKind::from_mode(&storage_mode);
-            let switch_result = switch_runtime_storage(&st, backend).await;
+            persist_manage_app(&st).await;
+            let switch_result = switch_runtime_storage(&st, &storage_mode).await;
             let runtime_switched = switch_result.is_ok();
             if !runtime_switched {
                 metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
@@ -687,18 +633,33 @@ async fn get_model(
 }
 
 async fn get_mcp_config(State(st): State<AppState>) -> impl IntoResponse {
-    let s = st.store.read().await;
-    Json(json!({ "mcp_servers": s.mcp_servers }))
+    let servers = st
+        .runtime
+        .read()
+        .await
+        .registry
+        .mcp_config
+        .get_mcp_servers()
+        .await
+        .unwrap_or_else(|_| json!({}));
+    Json(json!({ "mcp_servers": servers }))
 }
 
 async fn put_mcp_config(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let servers = body.get("mcp_servers").cloned().unwrap_or_else(|| json!({}));
+    if let Err(e) = st.runtime.read().await.registry.mcp_config.put_mcp_servers(&servers).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("mcp_config: {e}")})),
+        )
+            .into_response();
+    }
     let mut s = st.store.write().await;
-    s.mcp_servers = body.get("mcp_servers").cloned().unwrap_or_else(|| json!({}));
-    let _ = persist_json(&st.local_fs_root.join("config").join("mcp_servers.json"), &s.mcp_servers);
-    Json(json!({ "mcp_servers": s.mcp_servers }))
+    s.mcp_servers = servers.clone();
+    Json(json!({ "mcp_servers": s.mcp_servers })).into_response()
 }
 
 async fn get_mcp_oauth_status(State(st): State<AppState>) -> impl IntoResponse {
@@ -718,22 +679,12 @@ async fn get_mcp_oauth_status(State(st): State<AppState>) -> impl IntoResponse {
 }
 
 async fn get_memory(State(st): State<AppState>) -> impl IntoResponse {
+    let rt = st.runtime.read().await;
+    let ids = rt.registry.memory.list_thread_ids_with_memory().await.unwrap_or_default();
     let mut thread_facts = serde_json::Map::new();
-    if let Ok(mut rd) = tokio::fs::read_dir(st.local_fs_root.join("memory")).await {
-        while let Ok(Some(ent)) = rd.next_entry().await {
-            let name = ent.file_name();
-            let Some(filename) = name.to_str() else {
-                continue;
-            };
-            let Some(id) = filename.strip_suffix(".json") else {
-                continue;
-            };
-            let Ok(thread_id) = Uuid::parse_str(id) else {
-                continue;
-            };
-            let facts = st.storage.list_facts(thread_id).await.unwrap_or_default();
-            thread_facts.insert(id.to_string(), json!(facts));
-        }
+    for thread_id in ids {
+        let facts = rt.registry.memory.list_facts(thread_id).await.unwrap_or_default();
+        thread_facts.insert(thread_id.to_string(), json!(facts));
     }
     Json(json!({ "facts": thread_facts }))
 }
@@ -742,28 +693,26 @@ async fn reload_memory() -> impl IntoResponse {
     Json(json!({ "reloaded": true }))
 }
 
-async fn get_memory_config() -> impl IntoResponse {
+async fn get_memory_config(State(st): State<AppState>) -> impl IntoResponse {
+    let mode = st.runtime.read().await.active_mode.clone();
+    let storage_path = if mode == "local_fs" {
+        st.local_fs_root.join("memory").to_string_lossy().into_owned()
+    } else {
+        format!("managed:{mode}")
+    };
     Json(json!({
         "enabled": true,
-        "storage_path": ".deer-flow/local-fs/memory",
+        "storage_path": storage_path,
         "debounce_seconds": 2
     }))
 }
 
 async fn get_memory_status(State(st): State<AppState>) -> impl IntoResponse {
+    let rt = st.runtime.read().await;
+    let ids = rt.registry.memory.list_thread_ids_with_memory().await.unwrap_or_default();
     let mut facts_count = 0usize;
-    if let Ok(mut rd) = tokio::fs::read_dir(st.local_fs_root.join("memory")).await {
-        while let Ok(Some(ent)) = rd.next_entry().await {
-            let Some(filename) = ent.file_name().to_str().map(ToString::to_string) else {
-                continue;
-            };
-            let Some(id) = filename.strip_suffix(".json") else {
-                continue;
-            };
-            if let Ok(thread_id) = Uuid::parse_str(id) {
-                facts_count += st.storage.list_facts(thread_id).await.unwrap_or_default().len();
-            }
-        }
+    for thread_id in ids {
+        facts_count += rt.registry.memory.list_facts(thread_id).await.unwrap_or_default().len();
     }
     Json(json!({
         "config": {"enabled": true},
@@ -772,7 +721,7 @@ async fn get_memory_status(State(st): State<AppState>) -> impl IntoResponse {
 }
 
 async fn list_skills(State(st): State<AppState>) -> impl IntoResponse {
-    let skills = st.storage.list_skills().await.unwrap_or_default();
+    let skills = st.runtime.read().await.registry.skills.list_skills().await.unwrap_or_default();
     let skills: Vec<serde_json::Value> =
         skills.into_iter().map(|s| json!({"name": s.name, "enabled": s.enabled})).collect();
     Json(json!({ "skills": skills }))
@@ -797,24 +746,16 @@ async fn install_skill_archive(
             .into_response();
     };
     let enabled = body.enabled.unwrap_or(true);
-    let marker = st.skills_install_dir.join(format!("{skill_name}.installed"));
-    if let Some(parent) = marker.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error":"create install dir failed"})),
-            )
-                .into_response();
-        }
-    }
-    if std::fs::write(&marker, body.archive_name.as_bytes()).is_err() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error":"persist install marker failed"})),
-        )
-            .into_response();
-    }
-    if st.storage.put_skill(&SkillRecord { name: skill_name.to_string(), enabled }).await.is_err() {
+    if st
+        .runtime
+        .read()
+        .await
+        .registry
+        .skills
+        .put_skill(&SkillRecord { name: skill_name.to_string(), enabled })
+        .await
+        .is_err()
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"persist_skill_failed"})))
             .into_response();
     }
@@ -825,7 +766,7 @@ async fn get_skill(
     State(st): State<AppState>,
     Path(skill_name): Path<String>,
 ) -> impl IntoResponse {
-    match st.storage.get_skill(&skill_name).await {
+    match st.runtime.read().await.registry.skills.get_skill(&skill_name).await {
         Ok(Some(skill)) => {
             (StatusCode::OK, Json(json!({"name": skill.name, "enabled": skill.enabled})))
                 .into_response()
@@ -844,34 +785,45 @@ async fn update_skill(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    if st.storage.put_skill(&SkillRecord { name: skill_name.clone(), enabled }).await.is_err() {
+    if st
+        .runtime
+        .read()
+        .await
+        .registry
+        .skills
+        .put_skill(&SkillRecord { name: skill_name.clone(), enabled })
+        .await
+        .is_err()
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"persist_skill_failed"})))
             .into_response();
     }
     Json(json!({"name": skill_name, "enabled": enabled})).into_response()
 }
 
-async fn seed_default_skills(storage: &LocalFsStateStore) {
+async fn seed_default_skills(st: &AppState) {
+    let reg = st.runtime.read().await.registry.clone();
     let defaults = [("research", true), ("report-generation", true)];
     for (name, enabled) in defaults {
-        let existing = storage.get_skill(name).await.ok().flatten();
+        let existing = reg.skills.get_skill(name).await.ok().flatten();
         if existing.is_none() {
-            let _ = storage.put_skill(&SkillRecord { name: name.to_string(), enabled }).await;
+            let _ = reg.skills.put_skill(&SkillRecord { name: name.to_string(), enabled }).await;
         }
     }
 }
 
-async fn init_memory_defaults(storage: &LocalFsStateStore) {
+async fn init_memory_defaults(st: &AppState) {
+    let reg = st.runtime.read().await.registry.clone();
     let demo_thread = Uuid::nil();
-    let facts = storage.list_facts(demo_thread).await.unwrap_or_default();
+    let facts = reg.memory.list_facts(demo_thread).await.unwrap_or_default();
     if facts.is_empty() {
-        let _ = storage.append_fact(demo_thread, "system:memory_initialized").await;
+        let _ = reg.memory.append_fact(demo_thread, "system:memory_initialized").await;
     }
 }
 
 async fn bootstrap_storage(state: &AppState) {
-    seed_default_skills(&state.storage).await;
-    init_memory_defaults(&state.storage).await;
+    seed_default_skills(state).await;
+    init_memory_defaults(state).await;
 }
 
 async fn upload_thread_files(
@@ -879,17 +831,17 @@ async fn upload_thread_files(
     Path(thread_id): Path<String>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+    let Some(thread_id_s) = sanitize_thread_id(&thread_id) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
             .into_response();
     };
-    let base = st.threads_root.join(thread_id).join("uploads");
-    if tokio::fs::create_dir_all(&base).await.is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"create_dir"})))
+    let Ok(tid) = Uuid::parse_str(&thread_id_s) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
             .into_response();
-    }
+    };
     let mut files = Vec::new();
+    let reg = st.runtime.read().await.registry.clone();
     while let Ok(Some(field)) = multipart.next_field().await {
         let raw_filename = field
             .file_name()
@@ -903,8 +855,7 @@ async fn upload_thread_files(
             Ok(b) => b,
             Err(_) => continue,
         };
-        let path = base.join(&filename);
-        if tokio::fs::write(path, bytes).await.is_ok() {
+        if reg.uploads.put_upload(tid, &filename, &bytes).await.is_ok() {
             files.push(filename);
         }
     }
@@ -915,20 +866,24 @@ async fn list_thread_uploads(
     State(st): State<AppState>,
     Path(thread_id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+    let Some(thread_id_s) = sanitize_thread_id(&thread_id) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
             .into_response();
     };
-    let base = st.threads_root.join(thread_id).join("uploads");
-    let mut out = Vec::new();
-    if let Ok(mut rd) = tokio::fs::read_dir(base).await {
-        while let Ok(Some(ent)) = rd.next_entry().await {
-            if let Some(name) = ent.file_name().to_str() {
-                out.push(name.to_string());
-            }
-        }
-    }
+    let Ok(tid) = Uuid::parse_str(&thread_id_s) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_thread_id"})))
+            .into_response();
+    };
+    let out = st
+        .runtime
+        .read()
+        .await
+        .registry
+        .uploads
+        .list_upload_filenames(tid)
+        .await
+        .unwrap_or_default();
     Json(json!({"files": out})).into_response()
 }
 
@@ -936,17 +891,23 @@ async fn delete_thread_upload(
     State(st): State<AppState>,
     Path((thread_id, filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+    let Some(thread_id_s) = sanitize_thread_id(&thread_id) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
+    };
+    let Ok(tid) = Uuid::parse_str(&thread_id_s) else {
         return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
     };
     let Some(filename) = sanitize_path_component(&filename) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
     };
-    let path = st.threads_root.join(thread_id).join("uploads").join(filename);
-    match tokio::fs::remove_file(path).await {
-        Ok(_) => (StatusCode::NO_CONTENT, "").into_response(),
+    let reg = st.runtime.read().await.registry.clone();
+    if reg.uploads.get_upload(tid, &filename).await.ok().flatten().is_none() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match reg.uploads.delete_upload(tid, &filename).await {
+        Ok(()) => (StatusCode::NO_CONTENT, "").into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
@@ -961,19 +922,23 @@ async fn get_thread_artifact(
     Path((thread_id, path)): Path<(String, String)>,
     Query(query): Query<ArtifactQuery>,
 ) -> impl IntoResponse {
-    let Some(thread_id) = sanitize_thread_id(&thread_id) else {
+    let Some(thread_id_s) = sanitize_thread_id(&thread_id) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
+        return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
+    };
+    let Ok(tid) = Uuid::parse_str(&thread_id_s) else {
         return (StatusCode::BAD_REQUEST, "invalid thread_id").into_response();
     };
     let Some(path) = sanitize_relative_path(&path) else {
         metrics::counter!("open_harness_manage_invalid_path_total").increment(1);
         return (StatusCode::BAD_REQUEST, "invalid artifact path").into_response();
     };
-    let full = st.threads_root.join(thread_id).join("artifacts").join(path);
-    let bytes = match tokio::fs::read(&full).await {
-        Ok(b) => b,
-        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
-    };
+    let name = path.to_string_lossy();
+    let bytes =
+        match st.runtime.read().await.registry.artifacts.get_artifact(tid, name.as_ref()).await {
+            Ok(Some(b)) => b,
+            Ok(None) | Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
+        };
     let content_type = "application/octet-stream";
     let mut resp = axum::response::Response::builder()
         .status(StatusCode::OK)
@@ -1095,16 +1060,19 @@ async fn post_suggestions(
     if suggestions.is_empty() {
         suggestions = heuristic_suggestions(&body);
     }
-    let task_path = st.local_fs_root.join("tasks").join(format!("{}.json", thread_id));
-    let _ = persist_json(&task_path, &json!({"thread_id": thread_id, "suggestions": suggestions}));
-    Json(json!({"suggestions": suggestions})).into_response()
-}
-
-fn persist_json(path: &PathBuf, value: &serde_json::Value) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    if let Ok(tid) = Uuid::parse_str(&thread_id) {
+        let payload = json!({"thread_id": thread_id, "suggestions": suggestions});
+        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let _ = st
+            .runtime
+            .read()
+            .await
+            .registry
+            .artifacts
+            .put_artifact(tid, "suggestions.json", &bytes)
+            .await;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(value).unwrap_or_default())
+    Json(json!({"suggestions": suggestions})).into_response()
 }
 
 async fn list_agents(State(st): State<AppState>) -> impl IntoResponse {
@@ -1137,6 +1105,8 @@ async fn create_agent(
     let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("unnamed").to_string();
     let mut s = st.store.write().await;
     s.agents.insert(name, body.clone());
+    drop(s);
+    persist_manage_app(&st).await;
     (StatusCode::CREATED, Json(body))
 }
 
@@ -1147,18 +1117,26 @@ async fn update_agent(
 ) -> impl IntoResponse {
     let mut s = st.store.write().await;
     s.agents.insert(name, body.clone());
+    drop(s);
+    persist_manage_app(&st).await;
     Json(body)
 }
 
 async fn delete_agent(State(st): State<AppState>, Path(name): Path<String>) -> impl IntoResponse {
     let mut s = st.store.write().await;
     s.agents.remove(&name);
+    drop(s);
+    persist_manage_app(&st).await;
     StatusCode::NO_CONTENT
 }
 
 async fn get_user_profile(State(st): State<AppState>) -> impl IntoResponse {
-    let path = st.threads_root.join("USER.md");
-    let content = tokio::fs::read_to_string(path).await.ok();
+    let content =
+        match st.runtime.read().await.registry.artifacts.get_artifact(Uuid::nil(), "USER.md").await
+        {
+            Ok(Some(bytes)) => String::from_utf8(bytes).ok(),
+            _ => None,
+        };
     Json(json!({ "content": content }))
 }
 
@@ -1166,9 +1144,15 @@ async fn put_user_profile(
     State(st): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let path = st.threads_root.join("USER.md");
     let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let _ = tokio::fs::write(path, content).await;
+    let _ = st
+        .runtime
+        .read()
+        .await
+        .registry
+        .artifacts
+        .put_artifact(Uuid::nil(), "USER.md", content.as_bytes())
+        .await;
     Json(json!({ "content": content }))
 }
 
@@ -1183,6 +1167,8 @@ async fn restart_channel(
 ) -> impl IntoResponse {
     let mut s = st.store.write().await;
     s.channels.insert(name.clone(), "running".to_string());
+    drop(s);
+    persist_manage_app(&st).await;
     Json(json!({"name": name, "status": "restarted"}))
 }
 
@@ -1203,17 +1189,24 @@ mod tests {
     }
 
     #[test]
-    fn storage_capabilities_are_backend_aware() {
-        let local = storage_capabilities("local_fs");
-        assert_eq!(local.get("memory").and_then(|v| v.as_bool()), Some(true));
-        let pg = storage_capabilities("postgres");
-        assert_eq!(pg.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(pg.get("skills").and_then(|v| v.as_bool()), Some(false));
-        let sqlite = storage_capabilities("sqlite");
-        assert_eq!(sqlite.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
-        let redis = storage_capabilities("redis");
-        assert_eq!(redis.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
-        let s3 = storage_capabilities("s3");
-        assert_eq!(s3.get("manage_tasks").and_then(|v| v.as_bool()), Some(true));
+    fn unified_storage_capabilities_include_all_ports() {
+        let caps = json!({
+            "manage_tasks": true,
+            "memory": true,
+            "skills": true,
+            "tool_records": true,
+            "subagent_tasks": true,
+            "sandbox_logs": true,
+            "checkpoints": true,
+            "artifacts": true,
+            "thread_uploads": true,
+            "thread_meta": true,
+            "mcp_config": true,
+            "manage_config": true,
+            "thread_lifecycle": true,
+        });
+        assert_eq!(caps.get("checkpoints").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(caps.get("mcp_config").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(caps.get("thread_lifecycle").and_then(|v| v.as_bool()), Some(true));
     }
 }

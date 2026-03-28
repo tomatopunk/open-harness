@@ -2179,10 +2179,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "state-abstraction",
- "storage-postgres",
- "storage-redis",
- "storage-s3",
- "storage-sqlite",
+ "storage-registry",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2219,6 +2216,7 @@ dependencies = [
  "serde",
  "serde_json",
  "state-abstraction",
+ "storage-registry",
  "tokio",
  "tool-runtime",
  "tower-http 0.5.2",
@@ -3632,9 +3630,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage-common"
+version = "0.1.0"
+dependencies = [
+ "redis",
+]
+
+[[package]]
 name = "storage-postgres"
 version = "0.1.0"
 dependencies = [
+ "agent-ports",
  "async-trait",
  "chrono",
  "serde_json",
@@ -3649,11 +3655,36 @@ dependencies = [
 name = "storage-redis"
 version = "0.1.0"
 dependencies = [
+ "agent-ports",
  "async-trait",
  "redis",
  "serde",
  "serde_json",
  "state-abstraction",
+ "storage-common",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "storage-registry"
+version = "0.1.0"
+dependencies = [
+ "agent-ports",
+ "chrono",
+ "config-runtime",
+ "graph-runtime-core",
+ "object_store",
+ "redis",
+ "serde_json",
+ "sqlx",
+ "state-abstraction",
+ "storage-postgres",
+ "storage-redis",
+ "storage-s3",
+ "storage-sqlite",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "uuid",
@@ -3663,9 +3694,11 @@ dependencies = [
 name = "storage-s3"
 version = "0.1.0"
 dependencies = [
+ "agent-ports",
  "async-trait",
  "bytes",
  "chrono",
+ "futures",
  "object_store",
  "serde",
  "serde_json",
@@ -3679,6 +3712,7 @@ dependencies = [
 name = "storage-sqlite"
 version = "0.1.0"
 dependencies = [
+ "agent-ports",
  "async-trait",
  "chrono",
  "serde",

@@ -11,6 +11,7 @@
 | 主循环 | `prepare_tasks` → … → `apply_writes_after_node`（外层 turn）+ **`build_dispatch_plan_with_options` → `execute_dispatch_plan`** | `engine_v2.rs`, `lead_outer_superstep.rs`, `superstep_kernel.rs`, `scheduler.rs`, `dispatch.rs`, `loop_common.rs` |
 | 状态归约 | `StateEffect`（`agent-ports`）/ `StatePatch` | `state_effect.rs`（ports）, `turn_reducer.rs`, `state_patch.rs` |
 | 健壮性 | 缺失 tool 结果修复、重复 tool 指纹熔断 | `loop_hardening.rs` |
+| **运行时持久化** | 全状态单一装配：`StorageRegistry`（checkpoint / memory / skills / tools / subagents / sandbox / manage_tasks / mcp_config / thread_meta / artifacts / **thread uploads** / **manage_app 配置** / **`ThreadLifecycleStore::delete_thread_cascade`**）；`manage` 与 `orchestrator` 仅通过 `storage-registry::build_runtime_storage` 接入，无业务层路径与多后端分裂 | `state-abstraction`, `storage-registry`, `storage-sqlite`, `storage-postgres`, `storage-redis`, `storage-s3` |
 
 ## 关键约束
 
@@ -20,6 +21,7 @@
 4. **Memory**：`MemoryPort::retrieve` 失败通过 `PortError` 上浮，不再静默空结果。
 5. **工具执行**：同轮多工具并发上限为 `max_concurrent_tool_calls`；**结果按 `tool_call_id` 回填后再与原始 `calls` 顺序对齐**（`superstep_kernel::execute::invoke_tool_calls_in_call_order`），`before_tool_call` / `after_tool_call` 仍按调用列表顺序执行以保证 `&mut ThreadState` 安全。
 6. **子代理计划**：单轮任务数 `min(max_subagent_tasks, subagent_task_cap_per_response)`（默认可通过 `RunBudget` 配置 per-response 上限）；`per_subagent_task_timeout` 来自 `RunBudget`。
+7. **存储引擎（硬切换）**：`config.storage.mode` 为 `local_fs | sqlite | postgres | redis | s3` 之一；**无**连接失败回退到另一后端。Checkpoint、工具记录、子代理任务、沙箱执行、manage 任务、MCP 配置、线程元数据、用户工件（含 `USER.md`、按 thread 的 `suggestions.json`）、**线程上传（`ThreadUploadStore`）**、**Manage 侧 agents/channels/models（`ManageConfigStore`）** 均走同一 `StorageRegistry`；**删除 thread** 时由 `ThreadLifecycleStore::delete_thread_cascade` 级联清理各域数据。`MemoryStore::list_thread_ids_with_memory` 用于跨后端枚举有记忆数据的 thread。
 
 ## 相关文档
 

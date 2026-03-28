@@ -2,7 +2,7 @@
 
 Rust implementation of the **open-harness** control/data plane aligned with [deer-flow](https://github.com/bytedance/deer-flow): LangGraph-compatible gateway, manage API, orchestrator, IM channels, and pluggable storage.
 
-The runtime follows a storage-first design: `memory`, `skills`, `tool records`, `sandbox execution logs`, and `sub-agent tasks` are persisted through a unified storage abstraction.
+The runtime follows a storage-first design: `memory`, `skills`, `tool records`, `sandbox execution logs`, `sub-agent tasks`, thread uploads, manage UI config (agents/channels/models), and thread lifecycle (cascade delete) go through the same `StorageRegistry` / `build_runtime_storage` path for the active `storage.mode`.
 
 ## Layout
 
@@ -36,6 +36,8 @@ Storage modes:
 - `redis`
 - `s3`
 
+Operational keyspace / backup units: `docs/ops-storage-modes.md`. Cascade delete semantics: `docs/adr/001-thread-delete-cascade-consistency.md`.
+
 Storage-related keys in `storage`:
 
 - `mode`: `local_fs|sqlite|postgres|redis|s3`
@@ -52,7 +54,7 @@ Env overrides (nested with `__`):
 - `OPEN_HARNESS_GATEWAY__LANGGRAPH_UPSTREAM` — LangGraph server base URL (default `http://127.0.0.1:2024`)
 - `OPEN_HARNESS_MANAGE__BIND` — default `0.0.0.0:8081`
 - `OPEN_HARNESS_MANAGE__LANGGRAPH_URL` — used for remote thread `DELETE`
-- `OPEN_HARNESS_MANAGE__THREADS_ROOT` — local thread dirs (default `.deer-flow/threads`)
+- `OPEN_HARNESS_MANAGE__THREADS_ROOT` — **local workspace layout only** (default `.deer-flow/threads`): compatible with deer-flow style on-disk thread folders. It is **not** a second durable store: orchestrator/manage **must** persist thread state through `StorageRegistry` for the active `storage.mode`. Do not treat this path as an external storage API or leak it into HTTP contracts.
 - `OPEN_HARNESS_CHANNEL__GATEWAY_URL` — channel service callback target (default `http://127.0.0.1:8080`)
 - `OPEN_HARNESS_CHANNELS__ENABLED` — enabled IM channels list (defaults to `dingtalk,wecom` in config)
 - `OPEN_HARNESS_RUNTIME__ENGINE` — reserved; orchestrator **only** runs the inner model-tool-state loop (`agent-loop-runtime`)
@@ -74,7 +76,7 @@ IM channel bootstrap:
   - `GET /v1/models`
   - `POST /v1/chat/completions` (supports `stream=true|false`)
 - DeerFlow-like manage APIs are exposed under `/api/*` from `open-harness-manage`.
-- Orchestrator persists runtime traces for memory/skills/tools/sandbox/sub-agents under storage-backed paths.
+- Orchestrator persists runtime traces for memory/skills/tools/sandbox/sub-agents via `StorageRegistry`; manage uses the same registry for uploads, artifacts, and MCP/manage config (no ad-hoc thread directory writes for durable state).
 
 ## Smoke (curl)
 
