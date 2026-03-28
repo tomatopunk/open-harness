@@ -5,10 +5,12 @@
 
 pub mod checkpoint;
 pub mod checkpoint_engine;
+pub mod command_pipeline;
 pub mod engine_command;
 pub mod error;
 pub mod events;
 pub mod ids;
+pub mod interrupt;
 pub mod llm_routing;
 pub mod ports;
 pub mod schema;
@@ -19,11 +21,16 @@ pub mod tool_manifest;
 
 pub use checkpoint::CheckpointRecord;
 pub use checkpoint_engine::EngineCheckpointExtensions;
+pub use command_pipeline::{
+    build_dispatch_plan, build_dispatch_plan_with_options, validate_engine_command_invariants,
+    BuildDispatchPlanOptions, DispatchPlan, ProviderStrategy, ToolStrategy,
+};
 pub use engine_command::EngineCommand;
 pub use error::{PortError, PortResult};
 pub use events::{AgentEvent, EventSink, LoopStage, StepKind};
 pub use ids::{CheckpointId, RunId, StepSeq, ThreadId};
-pub use llm_routing::{classify_llm_routing, validate_engine_command_invariants};
+pub use interrupt::{InterruptKind, InterruptSnapshot, ResumeCursor};
+pub use llm_routing::classify_llm_routing;
 pub use ports::{
     tool_allowed, CheckpointPort, LLMPort, LlmTurnContext, LlmTurnOutput, MemoryContext,
     MemoryDelta, MemoryPort, SkillContext, SkillInjection, SkillPort, SubagentExecuteParams,

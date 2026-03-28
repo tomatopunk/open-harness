@@ -12,8 +12,8 @@ use uuid::Uuid;
 pub enum TaskKind {
     /// Named engine phase node (lead, premodel, postmodel, dispatch, ...).
     Pull { node_id: String },
-    /// Dynamic fan-out (e.g. one tool invoke or one subagent subtask slot).
-    Push { fanout_id: String, slot: u32 },
+    /// Dynamic fan-out: `call_id` is `ToolCallSpec::call_id` for `tool_invoke`, or `subagent:{idx}` for subagent slots.
+    Push { fanout_id: String, call_id: String },
 }
 
 /// One schedulable unit within a superstep.
@@ -30,7 +30,10 @@ impl TaskEnvelope {
     }
 
     #[must_use]
-    pub fn push(fanout_id: impl Into<String>, slot: u32) -> Self {
-        Self { id: Uuid::new_v4(), kind: TaskKind::Push { fanout_id: fanout_id.into(), slot } }
+    pub fn push_with_call_id(fanout_id: impl Into<String>, call_id: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: TaskKind::Push { fanout_id: fanout_id.into(), call_id: call_id.into() },
+        }
     }
 }

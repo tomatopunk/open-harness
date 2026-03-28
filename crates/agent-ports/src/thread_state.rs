@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::ids::{RunId, StepSeq, ThreadId};
+use crate::interrupt::{InterruptSnapshot, ResumeCursor};
 use crate::schema::THREAD_STATE_SCHEMA_VERSION;
 use crate::task::TaskEnvelope;
 
@@ -105,6 +106,12 @@ pub struct PregelMeta {
     /// Writes staged in the current execute phase; consumed when bumping channel after a node.
     #[serde(default)]
     pub pending_write_queue: Vec<PendingWriteRecord>,
+    /// Last interrupt snapshot (cleared on resume after user input).
+    #[serde(default)]
+    pub interrupt: Option<InterruptSnapshot>,
+    /// Last successful resume cursor (audit / replay; set when clearing [`Self::interrupt`]).
+    #[serde(default)]
+    pub last_resume_at: Option<ResumeCursor>,
 }
 
 impl PregelMeta {
