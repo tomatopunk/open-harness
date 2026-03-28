@@ -1,8 +1,15 @@
 //! Turn-scoped state updates (re-export of [`agent_ports::StateEffect`]).
 
+use agent_ports::ThreadState;
+
 pub use agent_ports::{
     apply_state_effects as apply_turn_effects, tool_round_from_calls, StateEffect as TurnEffect,
 };
+
+/// P5: single reducer entry for subagent port merge (no ad-hoc state surgery in dispatch).
+pub(crate) fn merge_subagent_port_into_parent(state: &mut ThreadState, merged: ThreadState) {
+    apply_turn_effects(state, &[TurnEffect::MergeSubagentFromPort { merged: Box::new(merged) }]);
+}
 
 #[cfg(test)]
 mod tests {

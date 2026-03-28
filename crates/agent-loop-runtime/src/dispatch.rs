@@ -1,18 +1,25 @@
 //! Post-model dispatch: maps [`agent_ports::EngineCommand`] to checkpoints and side effects.
 
 use crate::budget::RunBudget;
+use crate::child_run::subagent_params_for_child_run;
 use crate::commit_metadata;
-use crate::error::AgentLoopResult;
+use crate::error::{AgentLoopError, AgentLoopResult};
 use crate::loop_common::commit_at_stage;
 use crate::middleware::TurnContext;
+use crate::premodel_phase::run_premodel_skills_memory;
+use crate::runtime_spec::{DispatchPhaseNodes, SubagentRuntimeSpec};
 use crate::state_patch::StatePatch;
 use crate::superstep_kernel::apply_writes_after_node;
-use crate::superstep_kernel::execute::invoke_tool_calls_in_call_order;
-use crate::superstep_kernel::prepare::{prepare_subagent_fanout, prepare_tool_fanout};
+use crate::superstep_kernel::execute::{
+    invoke_tool_calls_in_call_order, verify_tool_push_tail_matches,
+};
+use crate::superstep_kernel::prepare::{
+    prepare_pull_task, prepare_subagent_fanout, prepare_tool_fanout,
+};
 use crate::turn_reducer::{apply_turn_effects, tool_round_from_calls, TurnEffect};
 use agent_ports::{
-    tool_allowed, AgentEvent, EngineCommand, EventSink, LoopStage, StepKind, SubagentExecuteParams,
-    ThreadId, ToolCallSpec, ToolManifest,
+    tool_allowed, AgentEvent, DispatchPlan, EngineCommand, EventSink, InterruptKind,
+    InterruptSnapshot, LoopStage, ResumeCursor, StepKind, ThreadId, ToolCallSpec, ToolManifest,
 };
 use graph_runtime_core::GraphRuntime;
 use serde_json::{json, Value};
@@ -20,12 +27,46 @@ use tracing::warn;
 
 use crate::agent_loop_types::AgentLoopDeps;
 use crate::budget::truncate_subtask_plan;
+use crate::run_config::AgentLoopRunConfig;
 
 /// Outer loop control after one post-model step completes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TurnDispatch {
     Stop,
     Again,
+}
+
+/// Single execution surface for the post-model dispatch phase (Command IR → tasks → writes → commit).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_dispatch_plan(
+    graph: &GraphRuntime,
+    deps: &AgentLoopDeps,
+    turn_ctx: &TurnContext,
+    thread_id: ThreadId,
+    run_id: agent_ports::RunId,
+    step_seq: agent_ports::StepSeq,
+    state: &mut agent_ports::ThreadState,
+    sink: &mut EventSink,
+    manifests: &[ToolManifest],
+    plan: DispatchPlan,
+    out: &agent_ports::LlmTurnOutput,
+    budget: RunBudget,
+) -> AgentLoopResult<TurnDispatch> {
+    execute_engine_command(
+        graph,
+        deps,
+        turn_ctx,
+        thread_id,
+        run_id,
+        step_seq,
+        state,
+        sink,
+        manifests,
+        plan.command,
+        out,
+        budget,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -40,33 +81,41 @@ pub(crate) async fn execute_engine_command(
     sink: &mut EventSink,
     manifests: &[ToolManifest],
     cmd: EngineCommand,
-    out: &agent_ports::LlmTurnOutput,
+    _out: &agent_ports::LlmTurnOutput,
     budget: RunBudget,
 ) -> AgentLoopResult<TurnDispatch> {
     match cmd {
-        EngineCommand::ClarifyExit => {
-            apply_turn_effects(
-                state,
-                &[TurnEffect::SetClarification { prompt: out.clarification_prompt.clone() }],
-            );
-            sink.push(AgentEvent::ClarificationRequested {
-                run_id,
-                prompt: out.clarification_prompt.clone(),
-            });
-            apply_writes_after_node(state, "dispatch_clarify");
-            *state = commit_at_stage(
-                graph,
-                thread_id,
-                run_id,
-                state.clone(),
-                sink,
-                LoopStage::ClarifyExit,
-                commit_metadata::clarify_exit(),
-            )
-            .await?;
-            sink.push(AgentEvent::RunCompleted { run_id, reason: "clarification".into() });
-            Ok(TurnDispatch::Stop)
-        }
+        EngineCommand::Interrupt { kind } => match kind {
+            InterruptKind::Clarification { prompt } => {
+                apply_turn_effects(
+                    state,
+                    &[TurnEffect::SetClarification { prompt: prompt.clone() }],
+                );
+                sink.push(AgentEvent::ClarificationRequested { run_id, prompt: prompt.clone() });
+                state.pregel.interrupt = Some(InterruptSnapshot {
+                    kind: InterruptKind::Clarification { prompt: prompt.clone() },
+                    resume_cursor: ResumeCursor {
+                        node_id: DispatchPhaseNodes::CLARIFY.into(),
+                        superstep_seq: state.pregel.superstep_seq,
+                        step_seq: state.step_seq,
+                    },
+                    payload: json!({}),
+                });
+                apply_writes_after_node(state, DispatchPhaseNodes::CLARIFY);
+                *state = commit_at_stage(
+                    graph,
+                    thread_id,
+                    run_id,
+                    state.clone(),
+                    sink,
+                    LoopStage::ClarifyExit,
+                    commit_metadata::clarify_exit(),
+                )
+                .await?;
+                sink.push(AgentEvent::RunCompleted { run_id, reason: "clarification".into() });
+                Ok(TurnDispatch::Stop)
+            }
+        },
         EngineCommand::Subagent { plan, finish_turn } => {
             let (truncated_plan, truncated) = truncate_subtask_plan(plan, &budget);
             if truncated {
@@ -77,13 +126,27 @@ pub(crate) async fn execute_engine_command(
                 task_count: truncated_plan.tasks.len(),
             });
 
+            if turn_ctx.run_cfg.subagent_spec.inherit_premodel_skills_memory {
+                prepare_pull_task(state, SubagentRuntimeSpec::NODE_PREMODEL);
+                run_premodel_skills_memory(
+                    deps,
+                    turn_ctx,
+                    thread_id,
+                    run_id,
+                    step_seq,
+                    state,
+                    sink,
+                    &turn_ctx.run_cfg,
+                    true,
+                )
+                .await?;
+                apply_writes_after_node(state, SubagentRuntimeSpec::NODE_PREMODEL);
+            }
+
             prepare_subagent_fanout(state, truncated_plan.tasks.len());
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::SubagentExec, true);
-            let sub_params = SubagentExecuteParams {
-                max_concurrent: budget.max_concurrent_subagents.max(1),
-                per_task_timeout: budget.per_subagent_task_timeout,
-            };
+            let sub_params = subagent_params_for_child_run(budget, &turn_ctx.run_cfg.subagent_spec);
             let results = deps
                 .subagents
                 .execute_plan(run_id, thread_id, &truncated_plan, state, &sub_params, sink)
@@ -110,9 +173,9 @@ pub(crate) async fn execute_engine_command(
                     &results,
                 )
                 .await?;
-            apply_turn_effects(state, &[TurnEffect::ReplaceFromMerge { state: Box::new(merged) }]);
+            crate::turn_reducer::merge_subagent_port_into_parent(state, merged);
 
-            apply_writes_after_node(state, "dispatch_subagent");
+            apply_writes_after_node(state, DispatchPhaseNodes::SUBAGENT);
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
@@ -167,6 +230,8 @@ pub(crate) async fn execute_engine_command(
             }
 
             prepare_tool_fanout(state, &invoke_batch);
+            verify_tool_push_tail_matches(state, &invoke_batch)
+                .map_err(crate::error::AgentLoopError::InvariantViolation)?;
 
             for call in &invoke_batch {
                 deps.middleware.before_tool_call(turn_ctx, state, call).await?;
@@ -214,7 +279,7 @@ pub(crate) async fn execute_engine_command(
             let effect = tool_round_from_calls(&calls, payloads);
             StatePatch::from(vec![effect]).apply(state);
 
-            apply_writes_after_node(state, "dispatch_tools");
+            apply_writes_after_node(state, DispatchPhaseNodes::TOOLS);
 
             sink.push(AgentEvent::StepFinished { run_id, step_seq, kind: StepKind::Tool });
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::ToolExec, false);
@@ -254,7 +319,7 @@ pub(crate) async fn execute_engine_command(
             sink.push(AgentEvent::MemoryUpdated);
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::MemoryCommit, false);
 
-            apply_writes_after_node(state, "dispatch_text");
+            apply_writes_after_node(state, DispatchPhaseNodes::TEXT);
 
             crate::loop_common::emit_stage(sink, run_id, step_seq, LoopStage::StateCommit, true);
             *state = commit_at_stage(
@@ -284,8 +349,11 @@ pub(crate) async fn execute_engine_command(
     }
 }
 
-/// Route LLM output via the single [`EngineCommand::from_llm_output`] entry (≈ [`classify_llm_routing`]).
-#[must_use]
-pub(crate) fn route_llm_output(out: &agent_ports::LlmTurnOutput) -> EngineCommand {
-    EngineCommand::from_llm_output(out)
+/// Build validated dispatch plan from one model turn (Command IR single entry; no silent fallback).
+pub(crate) fn route_llm_output(
+    out: &agent_ports::LlmTurnOutput,
+    run_cfg: &AgentLoopRunConfig,
+) -> AgentLoopResult<DispatchPlan> {
+    agent_ports::build_dispatch_plan_with_options(out, &run_cfg.dispatch_plan_options())
+        .map_err(|reason| AgentLoopError::InvariantViolation(format!("dispatch_plan: {reason}")))
 }
