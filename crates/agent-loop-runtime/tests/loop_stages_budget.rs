@@ -34,13 +34,14 @@ async fn inner_loop_emits_loop_stages() {
         Arc::new(DefaultSkillAdapter::default()),
         Arc::new(DefaultSubagentAdapter),
     );
+    let deps = Arc::new(deps);
     let cp: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
-    let graph = GraphRuntime::new(cp);
+    let graph = Arc::new(GraphRuntime::new(cp));
     let tid = ThreadId::new_v4();
     let state = ThreadState::new(tid);
     let (_final_state, sink) = run_agent_loop(
-        &graph,
-        &deps,
+        Arc::clone(&graph),
+        Arc::clone(&deps),
         tid,
         state,
         vec![json!("tool: echo")],
@@ -70,8 +71,9 @@ async fn subagent_plan_respects_concurrency_budget_events() {
         Arc::new(DefaultSkillAdapter::default()),
         Arc::new(DefaultSubagentAdapter),
     );
+    let deps = Arc::new(deps);
     let cp: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
-    let graph = GraphRuntime::new(cp);
+    let graph = Arc::new(GraphRuntime::new(cp));
     let tid = ThreadId::new_v4();
     let state = ThreadState::new(tid);
     let budget = RunBudget {
@@ -83,8 +85,8 @@ async fn subagent_plan_respects_concurrency_budget_events() {
         per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
     };
     let (_final_state, sink) = run_agent_loop(
-        &graph,
-        &deps,
+        Arc::clone(&graph),
+        Arc::clone(&deps),
         tid,
         state,
         vec![json!("subagent: test goal")],

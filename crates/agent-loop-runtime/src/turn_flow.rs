@@ -6,9 +6,9 @@ pub use agent_ports::EngineCommand;
 pub type TurnOutcome = EngineCommand;
 
 /// Maps model output to a single branch (priority: clarification > subagent > tools > text).
-#[must_use]
-pub fn classify_turn_outcome(out: &agent_ports::LlmTurnOutput) -> EngineCommand {
-    // 与 `dispatch::route_llm_output` / `classify_llm_routing` 同一入口。
+pub fn classify_turn_outcome(
+    out: &agent_ports::LlmTurnOutput,
+) -> Result<EngineCommand, &'static str> {
     agent_ports::classify_llm_routing(out)
 }
 
@@ -25,7 +25,10 @@ mod tests {
             subtask_plan: Some(SubtaskPlan { tasks: vec![SubtaskSpec::default()] }),
             ..Default::default()
         };
-        assert!(matches!(classify_turn_outcome(&out), EngineCommand::ClarifyExit));
+        assert!(matches!(
+            classify_turn_outcome(&out).expect("valid"),
+            EngineCommand::Interrupt { kind: agent_ports::InterruptKind::Clarification { .. } }
+        ));
     }
 
     #[test]
@@ -39,7 +42,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(matches!(classify_turn_outcome(&out), EngineCommand::Subagent { .. }));
+        assert!(matches!(
+            classify_turn_outcome(&out).expect("valid"),
+            EngineCommand::Subagent { .. }
+        ));
     }
 
     #[test]
@@ -53,7 +59,7 @@ mod tests {
             finish_turn: true,
             ..Default::default()
         };
-        match classify_turn_outcome(&out) {
+        match classify_turn_outcome(&out).expect("valid") {
             EngineCommand::ToolCalls { calls, finish_turn } => {
                 assert_eq!(calls.len(), 1);
                 assert!(finish_turn);

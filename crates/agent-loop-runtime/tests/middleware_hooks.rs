@@ -99,13 +99,14 @@ async fn middleware_hooks_fire_on_tool_path() {
         Arc::new(DefaultSubagentAdapter),
     );
     deps.middleware = mw.clone();
+    let deps = Arc::new(deps);
     let cp: Arc<dyn CheckpointPort> = Arc::new(MemoryCheckpointAdapter::default());
-    let graph = GraphRuntime::new(cp);
+    let graph = Arc::new(GraphRuntime::new(cp));
     let tid = ThreadId::new_v4();
     let state = ThreadState::new(tid);
     let (final_state, _sink) = run_agent_loop(
-        &graph,
-        &deps,
+        Arc::clone(&graph),
+        Arc::clone(&deps),
         tid,
         state,
         vec![json!("tool: echo")],

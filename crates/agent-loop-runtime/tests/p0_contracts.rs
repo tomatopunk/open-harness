@@ -1,11 +1,11 @@
 //! P0 契约：超步任务信封顺序、路由单入口、与 `EngineCommand` 对齐。
 
-use agent_loop_runtime::runtime_spec::LeadRuntimeSpec;
+use agent_loop_runtime::runtime_spec::{DispatchPhaseNodes, LeadRuntimeSpec};
 use agent_loop_runtime::superstep_kernel;
 use agent_loop_runtime::{truncate_subtask_plan, RunBudget};
 use agent_ports::{
-    classify_llm_routing, validate_engine_command_invariants, EngineCommand, LlmTurnOutput,
-    SubtaskPlan, SubtaskSpec,
+    classify_llm_routing, validate_engine_command_invariants, EngineCommand, InterruptKind,
+    LlmTurnOutput, SubtaskPlan, SubtaskSpec,
 };
 use agent_ports::{TaskKind, ThreadId, ThreadState, ToolCallSpec};
 use serde_json::json;
@@ -35,11 +35,12 @@ fn golden_tool_fanout_stages_push_slots() {
     ];
     superstep_kernel::prepare::prepare_tool_fanout(&mut st, &calls);
     assert_eq!(st.pregel.staged_tasks.len(), 2);
-    for (i, slot) in [0u32, 1].iter().enumerate() {
+    let expected_ids = ["1", "2"];
+    for (i, expected_id) in expected_ids.iter().enumerate() {
         match &st.pregel.staged_tasks[i].kind {
-            TaskKind::Push { fanout_id, slot: s } => {
+            TaskKind::Push { fanout_id, call_id } => {
                 assert_eq!(fanout_id, "tool_invoke");
-                assert_eq!(*s, *slot);
+                assert_eq!(call_id, expected_id);
             }
             other => panic!("expected Push at {i}, got {other:?}"),
         }
@@ -53,9 +54,9 @@ fn golden_subagent_fanout_stages_push_slots() {
     assert_eq!(st.pregel.staged_tasks.len(), 3);
     for i in 0..3 {
         match &st.pregel.staged_tasks[i].kind {
-            TaskKind::Push { fanout_id, slot } => {
+            TaskKind::Push { fanout_id, call_id } => {
                 assert_eq!(fanout_id, "subagent_task");
-                assert_eq!(*slot, i as u32);
+                assert_eq!(call_id, &format!("subagent:{i}"));
             }
             other => panic!("expected Push at {i}, got {other:?}"),
         }
@@ -101,12 +102,12 @@ fn routing_engine_command_matches_classify_llm_routing() {
         },
     ];
     for out in cases {
-        let a = EngineCommand::from_llm_output(&out);
-        let b = classify_llm_routing(&out);
+        let a = EngineCommand::try_from_llm_output(&out).expect("valid");
+        let b = classify_llm_routing(&out).expect("valid");
         assert_eq!(
             format!("{a:?}"),
             format!("{b:?}"),
-            "from_llm_output vs classify_llm_routing mismatch"
+            "try_from_llm_output vs classify_llm_routing mismatch"
         );
         validate_engine_command_invariants(&a).expect("invariants");
     }
@@ -116,8 +117,12 @@ fn routing_engine_command_matches_classify_llm_routing() {
 #[test]
 fn four_routing_paths_are_distinct_and_valid() {
     let clarify =
-        classify_llm_routing(&LlmTurnOutput { needs_clarification: true, ..Default::default() });
-    assert!(matches!(clarify, EngineCommand::ClarifyExit));
+        classify_llm_routing(&LlmTurnOutput { needs_clarification: true, ..Default::default() })
+            .expect("valid");
+    assert!(matches!(
+        clarify,
+        EngineCommand::Interrupt { kind: InterruptKind::Clarification { .. } }
+    ));
     validate_engine_command_invariants(&clarify).expect("clarify invariants");
 
     let sub = classify_llm_routing(&LlmTurnOutput {
@@ -125,7 +130,8 @@ fn four_routing_paths_are_distinct_and_valid() {
             tasks: vec![SubtaskSpec { goal: "do".into(), input: json!({}), budget_steps: 2 }],
         }),
         ..Default::default()
-    });
+    })
+    .expect("valid");
     assert!(matches!(sub, EngineCommand::Subagent { .. }));
     validate_engine_command_invariants(&sub).expect("subagent invariants");
 
@@ -136,14 +142,16 @@ fn four_routing_paths_are_distinct_and_valid() {
             call_id: "x".into(),
         }],
         ..Default::default()
-    });
+    })
+    .expect("valid");
     assert!(matches!(tools, EngineCommand::ToolCalls { .. }));
     validate_engine_command_invariants(&tools).expect("tools invariants");
 
     let text = classify_llm_routing(&LlmTurnOutput {
         assistant_text: Some("ok".into()),
         ..Default::default()
-    });
+    })
+    .expect("valid");
     assert!(matches!(text, EngineCommand::TextAndMemory { .. }));
     validate_engine_command_invariants(&text).expect("text invariants");
 }
@@ -173,4 +181,12 @@ fn lead_runtime_phase_order_contract_stable() {
         LeadRuntimeSpec::main_phase_pull_order(),
         &["lead", "premodel", "model", "postmodel"]
     );
+}
+
+#[test]
+fn dispatch_phase_node_ids_stable() {
+    assert_eq!(DispatchPhaseNodes::CLARIFY, "dispatch_clarify");
+    assert_eq!(DispatchPhaseNodes::SUBAGENT, "dispatch_subagent");
+    assert_eq!(DispatchPhaseNodes::TOOLS, "dispatch_tools");
+    assert_eq!(DispatchPhaseNodes::TEXT, "dispatch_text");
 }
