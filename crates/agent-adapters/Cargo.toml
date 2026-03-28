@@ -8,6 +8,7 @@ description = "Default port adapters (LLM, tools, memory, skills, subagents, che
 [dependencies]
 agent-ports = { path = "../agent-ports" }
 chrono = { workspace = true }
+async-openai = { workspace = true }
 async-trait = { workspace = true }
 model-runtime = { path = "../model-runtime" }
 serde = { workspace = true }
@@ -15,6 +16,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tool-runtime = { path = "../tool-runtime" }
+state-abstraction = { path = "../state-abstraction" }
 tracing = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }

@@ -76,7 +76,16 @@ impl LLMPort for HeuristicLlmAdapter {
             });
         }
 
-        let text = format!("echo:{}", self.model_hint.as_deref().unwrap_or("heuristic"),);
+        let model = ctx.model_name.as_deref().or(self.model_hint.as_deref()).unwrap_or("heuristic");
+        let mut text = format!("echo:{model}");
+        if ctx.is_plan_mode {
+            text.push_str(" | plan_mode");
+        }
+        if !ctx.assembled_tool_names.is_empty() {
+            text.push_str(" | tools:[");
+            text.push_str(&ctx.assembled_tool_names.join(","));
+            text.push(']');
+        }
         Ok(LlmTurnOutput {
             assistant_text: Some(text),
             tool_calls: vec![],

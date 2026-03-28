@@ -9,6 +9,7 @@ use agent_ports::{
 use async_trait::async_trait;
 use serde_json::Value;
 use tool_runtime::registry::Tool;
+use tool_runtime::validate_instance;
 use tool_runtime::ToolRegistry;
 
 /// Registry-backed tool port with static manifests map.
@@ -37,6 +38,12 @@ impl ToolPort for RegistryToolAdapter {
         _thread_id: ThreadId,
         call: &ToolCallSpec,
     ) -> PortResult<Value> {
+        if let Some(m) = self.manifests.iter().find(|m| m.name == call.name) {
+            if let Some(ref schema) = m.input_schema {
+                validate_instance(schema, &call.args)
+                    .map_err(|e| agent_ports::PortError::Tool(e.to_string()))?;
+            }
+        }
         self.registry
             .invoke_with_timeout(&call.name, call.args.clone(), self.default_timeout)
             .await

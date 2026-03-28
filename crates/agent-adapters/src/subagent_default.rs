@@ -58,7 +58,11 @@ impl SubagentPort for DefaultSubagentAdapter {
                 })
             })
             .collect();
-        let payload = json!({ "subagent_results": arr });
+        let policy_version = ctx.state.governance_marks.policy_version.clone().unwrap_or_default();
+        let payload = json!({
+            "subagent_results": arr,
+            "policy_version": policy_version,
+        });
         st.messages.push(ChatMessage { role: "assistant".into(), content: payload });
         Ok(st)
     }

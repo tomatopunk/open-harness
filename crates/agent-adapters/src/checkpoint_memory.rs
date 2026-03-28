@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_ports::{CheckpointPort, CheckpointRecord, RunId, ThreadId};
+use agent_ports::{CheckpointPort, CheckpointRecord, RunId, StepSeq, ThreadId};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
@@ -27,5 +27,17 @@ impl CheckpointPort for MemoryCheckpointAdapter {
     ) -> agent_ports::PortResult<Option<CheckpointRecord>> {
         let g = self.inner.read();
         Ok(g.get(&(thread_id, run_id)).and_then(|v| v.last()).cloned())
+    }
+
+    async fn load_at_step(
+        &self,
+        thread_id: ThreadId,
+        run_id: RunId,
+        step_seq: StepSeq,
+    ) -> agent_ports::PortResult<Option<CheckpointRecord>> {
+        let g = self.inner.read();
+        Ok(g.get(&(thread_id, run_id))
+            .and_then(|v| v.iter().find(|r| r.step_seq == step_seq))
+            .cloned())
     }
 }
