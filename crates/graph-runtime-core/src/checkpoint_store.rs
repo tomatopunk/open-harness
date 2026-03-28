@@ -1,7 +1,8 @@
 //! Checkpoint record construction for graph commits (storage backends implement [`agent_ports::CheckpointPort`]).
 
 use agent_ports::{
-    CheckpointId, CheckpointRecord, RunId, ThreadId, ThreadState, CHECKPOINT_RECORD_SCHEMA_VERSION,
+    CheckpointId, CheckpointRecord, EngineCheckpointExtensions, RunId, ThreadId, ThreadState,
+    CHECKPOINT_RECORD_SCHEMA_VERSION,
 };
 
 /// Build a checkpoint record wrapping thread state.
@@ -13,6 +14,11 @@ pub fn make_checkpoint(
     metadata: serde_json::Value,
 ) -> CheckpointRecord {
     let step_seq = state.step_seq;
+    let engine = EngineCheckpointExtensions {
+        state_schema_version: state.state_schema_version,
+        pending_writes_count: 1,
+        resume_cursor: None,
+    };
     CheckpointRecord {
         record_schema_version: CHECKPOINT_RECORD_SCHEMA_VERSION,
         id: CheckpointId::new_v4(),
@@ -21,5 +27,6 @@ pub fn make_checkpoint(
         step_seq,
         state,
         metadata,
+        engine,
     }
 }
