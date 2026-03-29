@@ -10,7 +10,7 @@ use uuid::Uuid;
 async fn sqlite_registry_manage_task_and_memory_and_mcp() {
     let mut cfg = AppConfig::default();
     cfg.storage.mode = "sqlite".into();
-    cfg.storage.sqlite_url = Some("sqlite::memory:".into());
+    cfg.storage.sqlite.url = Some("sqlite::memory:".into());
 
     let bundle = build_runtime_storage(&cfg).await.expect("build");
     let reg = &bundle.registry;

@@ -39,8 +39,6 @@ use thread_delete::ThreadDeleteEngine;
 #[derive(Clone)]
 struct AppState {
     delete_engine: Arc<ThreadDeleteEngine>,
-    /// Legacy layout root (local_fs only); used for memory config hint.
-    local_fs_root: PathBuf,
     store: Arc<RwLock<ManageStore>>,
     /// Unified runtime storage (all backends).
     runtime: Arc<RwLock<RuntimeStorageBundle>>,
@@ -65,6 +63,8 @@ struct ModelInfo {
     supports_reasoning_effort: bool,
 }
 
+/// In-process cache for MCP and manage-app config. Durable source of truth is the active
+/// `StorageRegistry` manage/MCP config ports; mutations call `persist_manage_app`.
 #[derive(Debug, Clone, Default)]
 struct ManageStore {
     mcp_servers: serde_json::Value,
@@ -84,19 +84,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = load_cached_or_default();
-    let use_local_fs = cfg.storage.mode == "local_fs";
-    let local_fs_root = if use_local_fs {
-        PathBuf::from(&cfg.storage.local_fs_root)
-    } else {
-        PathBuf::from(&cfg.manage.threads_root)
-    };
-    if use_local_fs {
-        std::fs::create_dir_all(local_fs_root.join("config")).ok();
-        std::fs::create_dir_all(local_fs_root.join("tasks")).ok();
-        std::fs::create_dir_all(local_fs_root.join("uploads")).ok();
-        std::fs::create_dir_all(local_fs_root.join("artifacts")).ok();
-        std::fs::create_dir_all(local_fs_root.join("memory")).ok();
-    }
 
     let langgraph_url = Arc::new(RwLock::new(cfg.manage.langgraph_url.clone()));
 
@@ -176,7 +163,6 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         delete_engine,
-        local_fs_root: local_fs_root.clone(),
         runtime,
         last_switch_ts: Arc::new(RwLock::new(now_ts())),
         tasks: Arc::new(dashmap::DashMap::new()),
@@ -579,27 +565,35 @@ async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
                 ),
             )
             .await;
-            let mut store = st.store.write().await;
-            store.models = cfg
-                .models
-                .iter()
-                .map(|m| ModelInfo {
-                    name: m.name.clone(),
-                    model: m.model.clone(),
-                    display_name: m.display_name.clone(),
-                    description: format!("provider: {}", m.use_provider),
-                    supports_thinking: false,
-                    supports_reasoning_effort: false,
-                })
-                .collect();
             let storage_mode = cfg.storage.mode.clone();
-            store.storage_mode = storage_mode.clone();
-            drop(store);
-            persist_manage_app(&st).await;
+            // Rebuild registry first so `ManageConfigStore` is the source of truth; avoid overwriting
+            // persisted agents/channels/models with YAML before the switch.
             let switch_result = switch_runtime_storage(&st, &storage_mode).await;
             let runtime_switched = switch_result.is_ok();
             if !runtime_switched {
                 metrics::counter!("open_harness_manage_storage_switch_failed_total").increment(1);
+            }
+            // Seed models from config only when nothing was persisted in ManageConfigStore.
+            let models_empty = {
+                let s = st.store.read().await;
+                s.models.is_empty()
+            };
+            if models_empty && !cfg.models.is_empty() {
+                let mut store = st.store.write().await;
+                store.models = cfg
+                    .models
+                    .iter()
+                    .map(|m| ModelInfo {
+                        name: m.name.clone(),
+                        model: m.model.clone(),
+                        display_name: m.display_name.clone(),
+                        description: format!("provider: {}", m.use_provider),
+                        supports_thinking: false,
+                        supports_reasoning_effort: false,
+                    })
+                    .collect();
+                drop(store);
+                persist_manage_app(&st).await;
             }
             (
                 StatusCode::OK,
@@ -695,8 +689,9 @@ async fn reload_memory() -> impl IntoResponse {
 
 async fn get_memory_config(State(st): State<AppState>) -> impl IntoResponse {
     let mode = st.runtime.read().await.active_mode.clone();
+    let cfg = load_cached_or_default();
     let storage_path = if mode == "local_fs" {
-        st.local_fs_root.join("memory").to_string_lossy().into_owned()
+        PathBuf::from(&cfg.storage.local_fs.root).join("memory").to_string_lossy().into_owned()
     } else {
         format!("managed:{mode}")
     };
@@ -734,6 +729,7 @@ struct InstallSkillRequest {
     enabled: Option<bool>,
 }
 
+/// Registers skill metadata in [`SkillStore`] only (no separate on-disk install marker outside the storage engine).
 async fn install_skill_archive(
     State(st): State<AppState>,
     Json(body): Json<InstallSkillRequest>,

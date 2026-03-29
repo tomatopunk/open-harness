@@ -99,7 +99,7 @@ async fn parity_local_fs_lifecycle_upload_manage_checkpoint() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut cfg = AppConfig::default();
     cfg.storage.mode = "local_fs".into();
-    cfg.storage.local_fs_root = dir.path().to_string_lossy().into();
+    cfg.storage.local_fs.root = dir.path().to_string_lossy().into();
 
     let bundle = build_runtime_storage(&cfg).await.expect("build");
     assert_lifecycle_upload_manage_checkpoint_parity(&bundle.registry).await;
@@ -109,7 +109,7 @@ async fn parity_local_fs_lifecycle_upload_manage_checkpoint() {
 async fn parity_sqlite_lifecycle_upload_manage_checkpoint() {
     let mut cfg = AppConfig::default();
     cfg.storage.mode = "sqlite".into();
-    cfg.storage.sqlite_url = Some("sqlite::memory:".into());
+    cfg.storage.sqlite.url = Some("sqlite::memory:".into());
 
     let bundle = build_runtime_storage(&cfg).await.expect("build");
     assert_lifecycle_upload_manage_checkpoint_parity(&bundle.registry).await;
@@ -129,7 +129,7 @@ async fn parity_redis_lifecycle_upload_manage_checkpoint() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let mut cfg = AppConfig::default();
     cfg.storage.mode = "redis".into();
-    cfg.storage.redis_url = Some(url);
+    cfg.storage.redis.url = Some(url);
 
     let bundle = build_runtime_storage(&cfg).await.expect("build");
     assert_lifecycle_upload_manage_checkpoint_parity(&bundle.registry).await;

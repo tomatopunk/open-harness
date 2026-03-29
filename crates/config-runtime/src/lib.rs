@@ -15,22 +15,75 @@ pub enum ConfigError {
     Figment(String),
 }
 
+/// Configuration for local filesystem backend.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct LocalFsConfig {
+    #[serde(default = "default_local_fs_root")]
+    pub root: String,
+}
+
+/// Configuration for SQLite backend.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SqliteConfig {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Configuration for PostgreSQL backend.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PostgresConfig {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Configuration for Redis backend.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct RedisConfig {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// Configuration for S3-compatible object storage backend.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct S3Config {
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default = "default_s3_prefix")]
+    pub prefix: String,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+}
+
+impl Default for S3Config {
+    fn default() -> Self {
+        Self { bucket: None, prefix: default_s3_prefix(), region: None, endpoint: None }
+    }
+}
+
+/// Unified storage configuration with nested backend-specific settings.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StorageConfig {
     #[serde(default = "default_storage_mode")]
     pub mode: String,
-    #[serde(default = "default_local_fs_root")]
-    pub local_fs_root: String,
+
     #[serde(default)]
-    pub sqlite_url: Option<String>,
+    pub local_fs: LocalFsConfig,
+
     #[serde(default)]
-    pub postgres_url: Option<String>,
+    pub sqlite: SqliteConfig,
+
     #[serde(default)]
-    pub redis_url: Option<String>,
+    pub postgres: PostgresConfig,
+
     #[serde(default)]
-    pub s3_bucket: Option<String>,
-    #[serde(default = "default_s3_prefix")]
-    pub s3_prefix: String,
+    pub redis: RedisConfig,
+
+    #[serde(default)]
+    pub s3: S3Config,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -46,7 +99,9 @@ pub struct ManageConfig {
     pub bind: String,
     #[serde(default = "default_langgraph")]
     pub langgraph_url: String,
-    /// Local thread workspace root (e.g. `.deer-flow/threads`).
+    /// **Deprecated for durable I/O**: not used by manage/orchestrator for uploads, artifacts, or
+    /// thread lifecycle; those go through `storage.mode` + `StorageRegistry`. Kept for config-file
+    /// compatibility and external tooling that still references the path.
     #[serde(default = "default_threads_root")]
     pub threads_root: String,
     #[serde(default)]
@@ -223,12 +278,11 @@ fn default_runtime() -> RuntimeConfig {
 fn default_storage() -> StorageConfig {
     StorageConfig {
         mode: default_storage_mode(),
-        local_fs_root: default_local_fs_root(),
-        sqlite_url: None,
-        postgres_url: None,
-        redis_url: None,
-        s3_bucket: None,
-        s3_prefix: default_s3_prefix(),
+        local_fs: LocalFsConfig { root: default_local_fs_root() },
+        sqlite: SqliteConfig::default(),
+        postgres: PostgresConfig::default(),
+        redis: RedisConfig::default(),
+        s3: S3Config::default(),
     }
 }
 

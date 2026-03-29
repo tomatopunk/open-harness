@@ -1,11 +1,19 @@
 storage:
   mode: local_fs
-  local_fs_root: .deer-flow/local-fs
-  sqlite_url: null
-  postgres_url: null
-  redis_url: redis://127.0.0.1:6379
-  s3_bucket: null
-  s3_prefix: open-harness
+  local_fs:
+    root: .deer-flow/local-fs
+  sqlite:
+    url: null
+  postgres:
+    url: null
+  redis:
+    url: redis://127.0.0.1:6379
+    password: null
+  s3:
+    bucket: null
+    prefix: open-harness
+    region: null
+    endpoint: null
 
 models:
   - name: gpt-4
@@ -44,8 +52,8 @@ gateway:
 manage:
   bind: 0.0.0.0:8081
   langgraph_url: http://127.0.0.1:2024
-  # Local thread workspace dirs only (deer-flow layout compatibility). NOT a second storage contract:
-  # durable state uses storage.mode + StorageRegistry. See README and docs/ops-storage-modes.md.
+  # Deprecated for durable I/O (ignored by manage for uploads/artifacts/lifecycle). Kept for YAML compat.
+  # See docs/ops-storage-modes.md.
   threads_root: .deer-flow/threads
   auth:
     enabled: false

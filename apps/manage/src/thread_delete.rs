@@ -1,4 +1,6 @@
-//! Thread delete: local `.deer-flow/threads/{id}` vs LangGraph remote — decoupled with compensation.
+//! Thread delete: durable state via [`ThreadLifecycleStore::delete_thread_cascade`] on the active
+//! `StorageRegistry` backend, then best-effort LangGraph HTTP `DELETE /threads/{id}` — decoupled with
+//! compensation. (Legacy name `DeletingLocal` means “local deployment storage”, not `threads_root` FS paths.)
 
 use chrono::{DateTime, Utc};
 use dashmap::mapref::entry::Entry;
@@ -15,7 +17,9 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum DeletePhase {
     Requested,
+    /// Cascade delete on the configured storage backend (`delete_thread_cascade`).
     DeletingLocal,
+    /// Cascade step finished (may be partial; see op errors).
     LocalDeleted,
     DeletingRemote,
     RemoteDeleted,

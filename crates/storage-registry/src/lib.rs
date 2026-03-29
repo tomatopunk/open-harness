@@ -30,7 +30,7 @@ pub enum StorageBuildError {
 }
 
 fn sqlite_connection_url(cfg: &AppConfig) -> Option<String> {
-    let u = cfg.storage.sqlite_url.clone().or(cfg.manage.sqlite_url.clone())?;
+    let u = cfg.storage.sqlite.url.clone().or(cfg.manage.sqlite_url.clone())?;
     Some(if u.starts_with("sqlite:") {
         u
     } else {
@@ -63,7 +63,7 @@ pub async fn build_runtime_storage(
     let mode = cfg.storage.mode.as_str();
     match mode {
         "local_fs" => {
-            let root = PathBuf::from(&cfg.storage.local_fs_root);
+            let root = PathBuf::from(&cfg.storage.local_fs.root);
             let layout = LocalFsLayout::new(&root);
             let _ = layout.ensure_base_dirs();
             let store = Arc::new(LocalFsStateStore::new(root));
@@ -119,7 +119,7 @@ pub async fn build_runtime_storage(
         }
         "postgres" => {
             let url =
-                cfg.storage.postgres_url.clone().or(cfg.manage.postgres_url.clone()).ok_or_else(
+                cfg.storage.postgres.url.clone().or(cfg.manage.postgres_url.clone()).ok_or_else(
                     || StorageBuildError::MissingConfig("postgres_url is required".into()),
                 )?;
             let store = storage_postgres::PostgresRuntimeStore::connect(&url).await?;
@@ -147,7 +147,7 @@ pub async fn build_runtime_storage(
         }
         "redis" => {
             let url =
-                cfg.storage.redis_url.clone().ok_or_else(|| {
+                cfg.storage.redis.url.clone().ok_or_else(|| {
                     StorageBuildError::MissingConfig("redis_url is required".into())
                 })?;
             let store = storage_redis::RedisRuntimeStore::connect(&url).await?;
@@ -175,10 +175,10 @@ pub async fn build_runtime_storage(
         }
         "s3" => {
             let bucket =
-                cfg.storage.s3_bucket.clone().ok_or_else(|| {
+                cfg.storage.s3.bucket.clone().ok_or_else(|| {
                     StorageBuildError::MissingConfig("s3_bucket is required".into())
                 })?;
-            let prefix = cfg.storage.s3_prefix.clone();
+            let prefix = cfg.storage.s3.prefix.clone();
             let store = storage_s3::build_s3_runtime_store(&bucket, prefix)?;
             let arc = Arc::new(store);
             let registry = StorageRegistry::new(

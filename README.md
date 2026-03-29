@@ -41,12 +41,15 @@ Operational keyspace / backup units: `docs/ops-storage-modes.md`. Cascade delete
 Storage-related keys in `storage`:
 
 - `mode`: `local_fs|sqlite|postgres|redis|s3`
-- `local_fs_root`
-- `sqlite_url`
-- `postgres_url`
-- `redis_url`
-- `s3_bucket`
-- `s3_prefix`
+- `local_fs.root`
+- `sqlite.url`
+- `postgres.url`
+- `redis.url`
+- `redis.password`
+- `s3.bucket`
+- `s3.prefix`
+- `s3.region` (optional)
+- `s3.endpoint` (optional, for S3-compatible storage)
 
 Env overrides (nested with `__`):
 

@@ -9,19 +9,19 @@
 
 ## `local_fs`
 
-- **根路径**：`storage.local_fs_root`（默认 `.deer-flow/local-fs`）。
+- **根路径**：`storage.local_fs.root`（默认 `.deer-flow/local-fs`）。
 - **布局**：`LocalFsLayout` — thread 元数据、checkpoint、memory、artifacts、uploads 等均在该根下子目录；见 `crates/state-abstraction/src/local_fs.rs`。
 - **备份**：打包整个 `local_fs_root` 目录；恢复时停写后解压回同一路径。
 
 ## `sqlite`
 
-- **单位**：单个 SQLite 文件（`storage.sqlite_url` 或 `manage.sqlite_url`）。
+- **单位**：单个 SQLite 文件（`storage.sqlite.url` 或 `manage.sqlite_url`）。
 - **表（示例）**：`checkpoints_step`, `checkpoints_latest`, `memory_facts`, `artifacts`, `thread_meta`, …（完整列表见 `SqliteRuntimeStore::migrate`）。
 - **备份**：文件级拷贝（`VACUUM` 可选）；恢复 = 替换文件。
 
 ## `postgres`
 
-- **单位**：一个 PostgreSQL 数据库 / schema（连接串 `storage.postgres_url`）。
+- **单位**：一个 PostgreSQL 数据库 / schema（连接串 `storage.postgres.url`）。
 - **表**：与 SQLite 语义对齐的 `checkpoints_*`, `memory_facts`, …。
 - **备份**：`pg_dump` / 逻辑卷快照；按租户策略执行。
 
@@ -38,10 +38,13 @@
 
 ## `s3`（及兼容 object store）
 
-- **前缀**：`{s3_prefix}/runtime/v1/`（`S3RuntimeStore::p`），例如 `open-harness/runtime/v1/...`。
+- **Bucket**: `storage.s3.bucket`
+- **前缀**：`{storage.s3.prefix}/runtime/v1/`（`S3RuntimeStore::p`），例如 `open-harness/runtime/v1/...`。
+- **可选配置**: `storage.s3.region`, `storage.s3.endpoint` (用于 S3 兼容存储)
 - **对象路径示例**：`checkpoints/step/{thread}/{run}/{step}.json`, `memory/{thread}.json`, `artifacts/{thread}/{name}`。
 - **备份**：版本控制 / 跨区域复制 / bucket 快照策略；恢复 = 还原前缀下对象。
 
 ## `manage.threads_root`
 
-- **仅**本地线程工作区布局与兼容（例如 Docker 卷挂载），**不是**第二套 Registry 存储契约； durable 状态一律走 `StorageRegistry`。详见根目录 `README.md` 与 `config.example.yaml` 注释。
+- **已弃用于 durable I/O**：manage 不再将 `threads_root` 作为上传/工件/删除线程的契约路径；凡属持久状态一律 `storage.mode` + `StorageRegistry`（与 [`存储引擎设计.md`](./存储引擎设计.md) §6 C1 一致）。
+- 字段仍保留于 YAML 以便旧配置与外部工具（例如仅挂载卷路径的脚本）兼容；**不要**依赖它作为第二套存储事实来源。
