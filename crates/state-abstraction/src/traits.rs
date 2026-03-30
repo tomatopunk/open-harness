@@ -271,3 +271,16 @@ pub trait ThreadLifecycleStore: Send + Sync {
         thread_id: Uuid,
     ) -> Result<crate::delete_thread_report::DeleteVerifyReport, StateError>;
 }
+
+/// Unified configuration store for runtime state.
+#[async_trait]
+pub trait UnifiedConfigStore: Send + Sync {
+    /// Get the unified configuration.
+    async fn get_unified_config(&self) -> Result<unified_config::UnifiedConfig, StateError>;
+
+    /// Put the unified configuration.
+    async fn put_unified_config(
+        &self,
+        config: &unified_config::UnifiedConfig,
+    ) -> Result<(), StateError>;
+}

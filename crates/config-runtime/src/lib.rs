@@ -443,6 +443,41 @@ pub fn set_test_config(c: AppConfig) {
         Some(ConfigSnapshot { config: c, config_path: app_config_path(), modified_at: None });
 }
 
+/// Load unified configuration from AppConfig and governance directory.
+pub fn load_unified_config(
+    app_cfg: &AppConfig,
+) -> Result<unified_config::UnifiedConfig, unified_config::loader::ConfigLoaderError> {
+    // Convert AppConfig to AppConfigRef
+    let app_cfg_ref = unified_config::loader::AppConfigRef {
+        models: app_cfg
+            .models
+            .iter()
+            .map(|m| unified_config::loader::ModelConfigRef {
+                name: m.name.clone(),
+                display_name: m.display_name.clone(),
+                use_provider: m.use_provider.clone(),
+                model: m.model.clone(),
+                api_key: m.api_key.clone(),
+                max_tokens: m.max_tokens,
+                temperature: m.temperature,
+                base_url: m.base_url.clone(),
+                use_responses_api: m.use_responses_api,
+                output_version: m.output_version.clone(),
+            })
+            .collect(),
+    };
+
+    unified_config::loader::load_unified_config(&app_cfg_ref, &app_cfg.runtime.governance_root)
+}
+
+/// Create a ConfigManager with hot-reload support from AppConfig.
+pub fn create_config_manager(
+    app_cfg: &AppConfig,
+) -> Result<unified_config::ConfigManager, unified_config::loader::ConfigLoaderError> {
+    let config = load_unified_config(app_cfg)?;
+    Ok(unified_config::ConfigManager::new(config))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

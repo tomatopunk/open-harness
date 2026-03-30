@@ -51,4 +51,5 @@ pub use traits::{
     ManageTaskStore, McpConfigStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
     SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore, ThreadLifecycleStore,
     ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord, ToolRecordStore,
+    UnifiedConfigStore,
 };

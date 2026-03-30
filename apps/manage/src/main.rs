@@ -51,6 +51,8 @@ struct AppState {
     auth_state: SharedAuthState,
     task_workers: TaskTracker,
     governance: Arc<GovernanceBundle>,
+    /// Unified configuration.
+    unified_config: Arc<RwLock<unified_config::UnifiedConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +163,13 @@ async fn main() -> anyhow::Result<()> {
         }),
     );
 
+    // Load unified configuration with hot-reload support
+    let unified_config_manager = config_runtime::create_config_manager(&cfg).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "unified_config load failed; using defaults");
+        unified_config::ConfigManager::new(unified_config::UnifiedConfig::default())
+    });
+    let unified_config = unified_config_manager.config.clone();
+
     let state = AppState {
         delete_engine,
         runtime,
@@ -173,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
         auth_state: auth_state.clone(),
         task_workers: TaskTracker::new(),
         governance,
+        unified_config,
         store: Arc::new(RwLock::new(ManageStore {
             mcp_servers: mcp_from_store,
             agents: manage_app.agents,
@@ -595,9 +605,26 @@ async fn reload_config(State(st): State<AppState>) -> impl IntoResponse {
                 drop(store);
                 persist_manage_app(&st).await;
             }
+
+            // Reload unified configuration with hot-reload
+            let unified_reload = config_runtime::create_config_manager(&cfg);
+            match unified_reload {
+                Ok(new_manager) => {
+                    // Update the unified config in AppState
+                    let current_config = new_manager.get_current();
+                    let mut st_config = st.unified_config.write().await;
+                    *st_config = current_config;
+                    drop(st_config);
+                    tracing::info!("unified_config reloaded successfully");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "unified_config reload failed");
+                }
+            }
+
             (
                 StatusCode::OK,
-                Json(json!({"reloaded": true, "runtime_storage_switched": runtime_switched})),
+                Json(json!({"reloaded": true, "runtime_storage_switched": runtime_switched, "unified_config_reloaded": true})),
             )
                 .into_response()
         }

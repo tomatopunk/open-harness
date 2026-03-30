@@ -37,6 +37,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 config-runtime = { path = "../../crates/config-runtime" }
 governance-plane = { path = "../../crates/governance-plane" }
+unified-config = { path = "../../crates/unified-config" }
 channel-bootstrap = { path = "../../crates/channel-bootstrap" }
 protocol-compat = { path = "../../crates/protocol-compat" }
 app-auth = { path = "../../crates/app-auth" }

@@ -16,6 +16,7 @@ use crate::traits::{
     ManageTaskStore, McpConfigStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
     SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore, ThreadLifecycleStore,
     ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord, ToolRecordStore,
+    UnifiedConfigStore,
 };
 use std::collections::HashMap;
 
@@ -99,6 +100,10 @@ impl LocalFsStateStore {
 
     fn manage_app_config_path(&self) -> PathBuf {
         self.root.join("config").join("manage_app.json")
+    }
+
+    fn unified_config_path(&self) -> PathBuf {
+        self.root.join("config").join("unified_config.json")
     }
 
     fn thread_ops_last_path(&self, thread_id: Uuid) -> PathBuf {
@@ -603,6 +608,28 @@ impl ManageConfigStore for LocalFsStateStore {
 
     async fn put_manage_app_config(&self, cfg: &ManageAppConfig) -> Result<(), StateError> {
         self.write_json(&self.manage_app_config_path(), cfg).await
+    }
+}
+
+#[async_trait]
+impl UnifiedConfigStore for LocalFsStateStore {
+    async fn get_unified_config(&self) -> Result<unified_config::UnifiedConfig, StateError> {
+        let path = self.unified_config_path();
+        match fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| StateError::Backend(format!("unified_config json: {e}"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(unified_config::UnifiedConfig::default())
+            }
+            Err(e) => Err(StateError::Backend(format!("read unified_config: {e}"))),
+        }
+    }
+
+    async fn put_unified_config(
+        &self,
+        config: &unified_config::UnifiedConfig,
+    ) -> Result<(), StateError> {
+        self.write_json(&self.unified_config_path(), config).await
     }
 }
 

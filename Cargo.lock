@@ -657,6 +657,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tracing",
+ "unified-config",
 ]
 
 [[package]]
@@ -1311,8 +1312,10 @@ version = "0.1.0"
 dependencies = [
  "agent-ports",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
+ "unified-config",
 ]
 
 [[package]]
@@ -2411,6 +2414,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "unified-config",
  "uuid",
 ]
 
@@ -3944,6 +3948,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "unified-config",
  "uuid",
 ]
 
@@ -4591,6 +4596,20 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unified-config"
+version = "0.1.0"
+dependencies = [
+ "config-runtime",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "unsafe-libyaml"

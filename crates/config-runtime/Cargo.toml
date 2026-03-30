@@ -10,3 +10,4 @@ figment = { workspace = true }
 thiserror = { workspace = true }
 once_cell = { workspace = true }
 tracing = { workspace = true }
+unified-config = { path = "../unified-config" }
