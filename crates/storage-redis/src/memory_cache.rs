@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use state_abstraction::{
-    memory_document::{decode_memory_json_str, MemoryDocument},
+    memory_document::{
+        decode_memory_json_str, Fact, MemoryDocument, MemoryHistory, MemoryUserProfile,
+    },
     MemoryStore, StateError,
 };
 use uuid::Uuid;
@@ -48,9 +50,20 @@ impl MemoryStore for RedisMemoryStore {
                     conn.lrange(&k, 0, -1).await.map_err(|e| StateError::Backend(e.to_string()))?;
                 Ok(MemoryDocument {
                     schema_version: state_abstraction::MEMORY_DOCUMENT_SCHEMA_VERSION,
-                    facts,
-                    user: serde_json::json!({}),
-                    history: serde_json::json!({}),
+                    facts: facts
+                        .into_iter()
+                        .map(|s| {
+                            Fact::new(
+                                s,
+                                state_abstraction::memory_document::FactCategory::Knowledge,
+                                1.0,
+                                "unknown".to_string(),
+                            )
+                        })
+                        .collect(),
+                    user: MemoryUserProfile::default(),
+                    history: MemoryHistory::default(),
+                    metadata: state_abstraction::memory_document::MemoryMetadata::default(),
                 })
             }
             _ => Ok(MemoryDocument::default()),
