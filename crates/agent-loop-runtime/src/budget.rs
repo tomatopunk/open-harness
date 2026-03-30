@@ -62,31 +62,31 @@ impl Default for RetryConfig {
 pub struct BudgetConfig {
     /// Configuration name (for logging and monitoring)
     pub name: String,
-    
+
     /// Base preset to inherit from (optional)
     #[serde(default)]
     pub base_preset: Option<BudgetPreset>,
-    
+
     /// Core budget parameters
     pub max_turns: u32,
     pub max_subagent_tasks: u32,
     pub subagent_task_cap_per_response: u32,
     pub max_concurrent_subagents: u32,
     pub max_concurrent_tool_calls: u32,
-    
+
     /// Timeout configurations
     #[serde(with = "humantime_serde", default)]
     pub per_subagent_task_timeout: Option<Duration>,
     #[serde(with = "humantime_serde", default)]
     pub max_total_wall_time: Option<Duration>,
-    
+
     /// Retry configuration
     #[serde(default)]
     pub retry: RetryConfig,
-    
+
     /// Token budget (optional)
     pub token_budget: Option<u64>,
-    
+
     /// Custom labels for categorization
     #[serde(default)]
     pub labels: HashMap<String, String>,
@@ -149,13 +149,27 @@ impl std::fmt::Display for ConfigWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ZeroTurns => write!(f, "max_turns is 0, no turns will be executed"),
-            Self::ZeroSubagentTasks => write!(f, "max_subagent_tasks is 0, no subagent tasks will be executed"),
-            Self::ZeroConcurrency => write!(f, "max_concurrent_subagents is 0, no concurrent execution possible"),
-            Self::HighConcurrency(val) => write!(f, "max_concurrent_subagents ({val}) is very high"),
-            Self::HighRetries(val) => write!(f, "max_retries_per_task ({val}) is very high, may cause long delays"),
-            Self::InvalidBackoff(val) => write!(f, "backoff_factor ({val}) < 1.0, delays will decrease with each retry"),
-            Self::LongTimeout(secs) => write!(f, "max_total_wall_time > 24 hours ({secs}s), consider reducing"),
-            Self::LowTokenBudget(val) => write!(f, "token_budget ({val}) is very low, may be exhausted quickly"),
+            Self::ZeroSubagentTasks => {
+                write!(f, "max_subagent_tasks is 0, no subagent tasks will be executed")
+            }
+            Self::ZeroConcurrency => {
+                write!(f, "max_concurrent_subagents is 0, no concurrent execution possible")
+            }
+            Self::HighConcurrency(val) => {
+                write!(f, "max_concurrent_subagents ({val}) is very high")
+            }
+            Self::HighRetries(val) => {
+                write!(f, "max_retries_per_task ({val}) is very high, may cause long delays")
+            }
+            Self::InvalidBackoff(val) => {
+                write!(f, "backoff_factor ({val}) < 1.0, delays will decrease with each retry")
+            }
+            Self::LongTimeout(secs) => {
+                write!(f, "max_total_wall_time > 24 hours ({secs}s), consider reducing")
+            }
+            Self::LowTokenBudget(val) => {
+                write!(f, "token_budget ({val}) is very low, may be exhausted quickly")
+            }
         }
     }
 }
@@ -172,8 +186,12 @@ impl std::fmt::Display for ConfigValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TurnsTooHigh(val) => write!(f, "max_turns ({val}) exceeds maximum allowed (100)"),
-            Self::TokenBudgetTooHigh => write!(f, "token_budget exceeds maximum allowed (1,000,000)"),
-            Self::ConcurrencyTooHigh(val) => write!(f, "max_concurrent_subagents ({val}) exceeds maximum allowed (32)"),
+            Self::TokenBudgetTooHigh => {
+                write!(f, "token_budget exceeds maximum allowed (1,000,000)")
+            }
+            Self::ConcurrencyTooHigh(val) => {
+                write!(f, "max_concurrent_subagents ({val}) exceeds maximum allowed (32)")
+            }
             Self::InvalidConfiguration(msg) => write!(f, "Invalid configuration: {msg}"),
         }
     }
@@ -192,7 +210,7 @@ pub struct RunBudget {
     pub max_concurrent_tool_calls: u32,
     /// Wall-clock limit for each subagent subtask (`None` = no limit).
     pub per_subagent_task_timeout: Option<Duration>,
-    
+
     // New fields for enhanced budget control
     /// Maximum retries allowed per individual task
     pub max_retries_per_task: u32,
@@ -235,7 +253,7 @@ impl BudgetConfig {
     /// Load configuration from a file (YAML or JSON).
     pub fn from_file(path: &str) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
-        
+
         if path.ends_with(".yaml") || path.ends_with(".yml") {
             Ok(serde_yaml::from_str(&content)?)
         } else if path.ends_with(".json") {
@@ -244,11 +262,11 @@ impl BudgetConfig {
             Err(ConfigError::UnsupportedFormat)
         }
     }
-    
+
     /// Load configuration from environment variables with production defaults.
     pub fn from_env_with_defaults() -> Self {
         let mut config = Self::production_defaults();
-        
+
         if let Ok(val) = std::env::var("BUDGET_MAX_TURNS") {
             config.max_turns = val.parse().unwrap_or(config.max_turns);
         }
@@ -256,18 +274,20 @@ impl BudgetConfig {
             config.max_subagent_tasks = val.parse().unwrap_or(config.max_subagent_tasks);
         }
         if let Ok(val) = std::env::var("BUDGET_MAX_CONCURRENT") {
-            config.max_concurrent_subagents = val.parse().unwrap_or(config.max_concurrent_subagents);
+            config.max_concurrent_subagents =
+                val.parse().unwrap_or(config.max_concurrent_subagents);
         }
         if let Ok(val) = std::env::var("BUDGET_TOKEN_LIMIT") {
             config.token_budget = val.parse().ok();
         }
         if let Ok(val) = std::env::var("BUDGET_MAX_RETRIES") {
-            config.retry.max_retries_per_task = val.parse().unwrap_or(config.retry.max_retries_per_task);
+            config.retry.max_retries_per_task =
+                val.parse().unwrap_or(config.retry.max_retries_per_task);
         }
-        
+
         config
     }
-    
+
     /// Convert BudgetConfig to RunBudget.
     pub fn to_run_budget(&self) -> RunBudget {
         RunBudget {
@@ -286,11 +306,11 @@ impl BudgetConfig {
             retry_jitter: self.retry.jitter,
         }
     }
-    
+
     /// Validate configuration and return warnings.
     pub fn validate(&self) -> Vec<ConfigWarning> {
         let mut warnings = Vec::new();
-        
+
         if self.max_turns == 0 {
             warnings.push(ConfigWarning::ZeroTurns);
         }
@@ -319,10 +339,10 @@ impl BudgetConfig {
                 warnings.push(ConfigWarning::LowTokenBudget(token_budget));
             }
         }
-        
+
         warnings
     }
-    
+
     /// Validate configuration strictly (returns errors).
     pub fn validate_strict(&self) -> Result<(), ConfigValidationError> {
         if self.max_turns > 100 {
@@ -336,13 +356,13 @@ impl BudgetConfig {
         }
         if self.retry.backoff_factor < 0.1 {
             return Err(ConfigValidationError::InvalidConfiguration(
-                "backoff_factor too small (< 0.1)".to_string()
+                "backoff_factor too small (< 0.1)".to_string(),
             ));
         }
-        
+
         Ok(())
     }
-    
+
     /// Production environment default configuration.
     pub fn production_defaults() -> Self {
         Self {
@@ -366,7 +386,7 @@ impl BudgetConfig {
             labels: HashMap::new(),
         }
     }
-    
+
     /// Development environment default configuration.
     pub fn development_defaults() -> Self {
         Self {
@@ -390,7 +410,7 @@ impl BudgetConfig {
             labels: HashMap::new(),
         }
     }
-    
+
     /// Testing environment default configuration.
     pub fn testing_defaults() -> Self {
         Self {
@@ -414,7 +434,7 @@ impl BudgetConfig {
             labels: HashMap::new(),
         }
     }
-    
+
     /// Create from existing RunBudget.
     pub fn from_run_budget(budget: &RunBudget) -> Self {
         Self {
@@ -460,11 +480,11 @@ impl RunBudget {
         let base_delay = self.retry_initial_delay_ms as f64;
         let backoff = self.retry_backoff_factor;
         let max_delay = self.retry_max_delay_ms as f64;
-        
+
         // Exponential backoff: base_delay * (backoff ^ (attempt - 1))
         let delay = base_delay * backoff.powi(attempt as i32 - 1);
         let delay = if delay > max_delay { max_delay } else { delay };
-        
+
         // Add jitter if enabled
         let final_delay = if self.retry_jitter {
             use rand::Rng;
@@ -476,20 +496,20 @@ impl RunBudget {
         } else {
             delay
         };
-        
+
         Duration::from_millis(final_delay as u64)
     }
-    
+
     /// Check if total wall time budget is exceeded.
     #[must_use]
     pub fn is_wall_time_exceeded(&self, elapsed: Duration) -> bool {
-        self.max_total_wall_time.map_or(false, |max| elapsed > max)
+        self.max_total_wall_time.is_some_and(|max| elapsed > max)
     }
-    
+
     /// Check if token budget is exceeded.
     #[must_use]
     pub fn is_token_budget_exceeded(&self, used: u64) -> bool {
-        self.token_budget.map_or(false, |max| used > max)
+        self.token_budget.is_some_and(|max| used > max)
     }
 
     /// Validate budget configuration for common issues.
@@ -502,19 +522,27 @@ impl RunBudget {
         }
 
         if self.max_subagent_tasks == 0 {
-            warnings.push("max_subagent_tasks is 0, no subagent tasks will be executed".to_string());
+            warnings
+                .push("max_subagent_tasks is 0, no subagent tasks will be executed".to_string());
         }
 
         if self.max_concurrent_subagents == 0 {
-            warnings.push("max_concurrent_subagents is 0, no concurrent execution possible".to_string());
+            warnings.push(
+                "max_concurrent_subagents is 0, no concurrent execution possible".to_string(),
+            );
         }
 
         if self.max_retries_per_task > 10 {
-            warnings.push(format!("max_retries_per_task ({}) is very high, may cause long delays", self.max_retries_per_task));
+            warnings.push(format!(
+                "max_retries_per_task ({}) is very high, may cause long delays",
+                self.max_retries_per_task
+            ));
         }
 
         if self.retry_backoff_factor < 1.0 {
-            warnings.push("retry_backoff_factor < 1.0, delays will decrease with each retry".to_string());
+            warnings.push(
+                "retry_backoff_factor < 1.0, delays will decrease with each retry".to_string(),
+            );
         }
 
         if let Some(timeout) = self.max_total_wall_time {
@@ -525,7 +553,9 @@ impl RunBudget {
 
         if let Some(token_budget) = self.token_budget {
             if token_budget < 1000 {
-                warnings.push("token_budget is very low (< 1000), may be exhausted quickly".to_string());
+                warnings.push(
+                    "token_budget is very low (< 1000), may be exhausted quickly".to_string(),
+                );
             }
         }
 
@@ -545,7 +575,7 @@ impl RunBudget {
             max_retries_per_task: 5,
             retry_backoff_factor: 2.0,
             max_total_wall_time: None, // No time limit for development
-            token_budget: None, // No token limit for development
+            token_budget: None,        // No token limit for development
             retry_initial_delay_ms: 500,
             retry_max_delay_ms: 10000,
             retry_jitter: true,
@@ -565,7 +595,7 @@ impl RunBudget {
             max_retries_per_task: 3,
             retry_backoff_factor: 2.0,
             max_total_wall_time: Some(Duration::from_secs(1800)), // 30 minutes
-            token_budget: Some(100_000), // 100k tokens
+            token_budget: Some(100_000),                          // 100k tokens
             retry_initial_delay_ms: 1000,
             retry_max_delay_ms: 30000,
             retry_jitter: true,
@@ -585,7 +615,7 @@ impl RunBudget {
             max_retries_per_task: 1,
             retry_backoff_factor: 1.5,
             max_total_wall_time: Some(Duration::from_secs(300)), // 5 minutes
-            token_budget: Some(10_000), // 10k tokens
+            token_budget: Some(10_000),                          // 10k tokens
             retry_initial_delay_ms: 100,
             retry_max_delay_ms: 1000,
             retry_jitter: false,
@@ -605,7 +635,7 @@ impl RunBudget {
             max_retries_per_task: 2,
             retry_backoff_factor: 1.5,
             max_total_wall_time: Some(Duration::from_secs(600)), // 10 minutes
-            token_budget: Some(500_000), // 500k tokens
+            token_budget: Some(500_000),                         // 500k tokens
             retry_initial_delay_ms: 500,
             retry_max_delay_ms: 5000,
             retry_jitter: true,
@@ -625,7 +655,7 @@ impl RunBudget {
             max_retries_per_task: 4,
             retry_backoff_factor: 2.0,
             max_total_wall_time: Some(Duration::from_secs(3600)), // 1 hour
-            token_budget: Some(200_000), // 200k tokens
+            token_budget: Some(200_000),                          // 200k tokens
             retry_initial_delay_ms: 1000,
             retry_max_delay_ms: 20000,
             retry_jitter: true,
@@ -645,7 +675,7 @@ impl RunBudget {
             max_retries_per_task: 2,
             retry_backoff_factor: 2.0,
             max_total_wall_time: Some(Duration::from_secs(900)), // 15 minutes
-            token_budget: Some(50_000), // 50k tokens
+            token_budget: Some(50_000),                          // 50k tokens
             retry_initial_delay_ms: 800,
             retry_max_delay_ms: 15000,
             retry_jitter: true,
@@ -655,7 +685,7 @@ impl RunBudget {
     /// Apply conservative limits to a budget (reduce by 50%).
     #[must_use]
     pub fn conservative(&self) -> Self {
-        let mut budget = self.clone();
+        let mut budget = *self;
         budget.max_turns = (budget.max_turns / 2).max(1);
         budget.max_subagent_tasks = (budget.max_subagent_tasks / 2).max(1);
         budget.max_concurrent_subagents = (budget.max_concurrent_subagents / 2).max(1);
@@ -669,7 +699,7 @@ impl RunBudget {
     /// Apply generous limits to a budget (increase by 50%).
     #[must_use]
     pub fn generous(&self) -> Self {
-        let mut budget = self.clone();
+        let mut budget = *self;
         budget.max_turns = (budget.max_turns * 3 / 2).max(1);
         budget.max_subagent_tasks = (budget.max_subagent_tasks * 3 / 2).max(1);
         budget.max_concurrent_subagents = (budget.max_concurrent_subagents * 3 / 2).max(1);
@@ -722,10 +752,10 @@ mod budget_tests {
     #[test]
     fn test_conservative_and_generous() {
         let base = RunBudget::production();
-        
+
         let conservative = base.conservative();
         assert!(conservative.max_subagent_tasks < base.max_subagent_tasks);
-        
+
         let generous = base.generous();
         assert!(generous.max_subagent_tasks > base.max_subagent_tasks);
     }
