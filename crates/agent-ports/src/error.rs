@@ -27,6 +27,12 @@ pub enum PortError {
     ClarificationRequired,
     #[error("aborted: {0}")]
     Aborted(String),
+    #[error("not_found: {0}")]
+    NotFound(String),
+    #[error("validation: {0}")]
+    Validation(String),
+    #[error("timeout")]
+    Timeout,
 }
 
 pub type PortResult<T> = Result<T, PortError>;

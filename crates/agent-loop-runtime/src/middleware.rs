@@ -4,6 +4,10 @@
 //! → PostModel → **`after_model`** → dispatch; each tool invoke runs **`before_tool_call`** /
 //! **`after_tool_call`** (together: `around_tool_call` semantics).
 
+pub mod builder;
+pub mod skill_injection;
+pub mod tool_assembly;
+
 use std::sync::Arc;
 
 use crate::error::AgentLoopResult;

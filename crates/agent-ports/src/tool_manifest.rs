@@ -23,6 +23,29 @@ pub struct ToolManifest {
     pub retry_max: u32,
     #[serde(default)]
     pub side_effect_class: SideEffectClass,
+    /// Tool provider type (local, mcp, skill, community)
+    #[serde(default)]
+    pub provider_type: ToolProviderType,
+    /// Tool provider name
+    #[serde(default)]
+    pub provider_name: String,
+    /// Dynamic load path (for lazily loaded tools)
+    #[serde(default)]
+    pub load_path: Option<String>,
+    /// Tool version
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Tool provider type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolProviderType {
+    #[default]
+    Local,
+    Mcp,
+    Skill,
+    Community,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]

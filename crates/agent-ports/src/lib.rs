@@ -21,6 +21,7 @@ pub mod task;
 pub mod task_decomposer;
 pub mod thread_state;
 pub mod tool_manifest;
+pub mod tool_provider;
 
 pub use checkpoint::CheckpointRecord;
 pub use checkpoint_engine::EngineCheckpointExtensions;
@@ -61,4 +62,7 @@ pub use thread_state::{
     PendingWriteRecord, PlanState, PregelMeta, SubagentTaskRecord, ThreadState, TodoItem,
     ToolInvocationRecord, ToolResultRecord,
 };
-pub use tool_manifest::{RiskLevel, SideEffectClass, ToolAssemblyPolicy, ToolManifest};
+pub use tool_manifest::{
+    RiskLevel, SideEffectClass, ToolAssemblyPolicy, ToolManifest, ToolProviderType,
+};
+pub use tool_provider::{HealthStatus, ToolProvider, ToolResult, ToolResultMetadata};

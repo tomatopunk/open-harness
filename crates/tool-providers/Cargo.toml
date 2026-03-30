@@ -1,0 +1,21 @@
+[package]
+name = "tool-providers"
+version = "0.1.0"
+edition = "2021"
+description = "Tool providers for Harness - MCP, Skills, Local, and Community tools"
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+agent-ports = { path = "../agent-ports" }
+mcp-client = { path = "../mcp-client" }
+skill-system = { path = "../skill-system" }
+tool-runtime = { path = "../tool-runtime" }
+
+[lints]
+workspace = true
