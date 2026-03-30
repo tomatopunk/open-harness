@@ -35,9 +35,9 @@
 //! ```
 
 use agent_ports::{
-    AgentEvent, ChatMessage, EventSink, PortError, PortResult,
-    RetryPolicy, RunId, SubagentExecuteParams, SubagentMergeContext, SubagentPort, SubagentResult,
-    SubtaskPlan, SubtaskSpec, TaskFailure, ThreadId, ThreadState,
+    AgentEvent, ChatMessage, EventSink, PortError, PortResult, RetryPolicy, RunId,
+    SubagentExecuteParams, SubagentMergeContext, SubagentPort, SubagentResult, SubtaskPlan,
+    SubtaskSpec, TaskFailure, ThreadId, ThreadState,
 };
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -110,6 +110,7 @@ impl EnhancedExecutionConfig {
 /// Enhanced subagent adapter with full production features.
 #[derive(Debug, Clone)]
 pub struct EnhancedSubagentAdapter {
+    #[allow(dead_code)]
     default_params: SubagentExecuteParams,
     execution_config: EnhancedExecutionConfig,
 }
@@ -133,34 +134,29 @@ impl EnhancedSubagentAdapter {
     /// Create with custom default parameters.
     #[must_use]
     pub fn with_params(params: SubagentExecuteParams) -> Self {
-        Self {
-            default_params: params,
-            execution_config: EnhancedExecutionConfig::default(),
-        }
+        Self { default_params: params, execution_config: EnhancedExecutionConfig::default() }
     }
 
     /// Create with custom execution configuration.
     #[must_use]
     pub fn with_config(config: EnhancedExecutionConfig) -> Self {
-        Self {
-            default_params: SubagentExecuteParams::default(),
-            execution_config: config,
-        }
+        Self { default_params: SubagentExecuteParams::default(), execution_config: config }
     }
 
     /// Create with both parameters and configuration.
     #[must_use]
-    pub fn with_params_and_config(params: SubagentExecuteParams, config: EnhancedExecutionConfig) -> Self {
-        Self {
-            default_params: params,
-            execution_config: config,
-        }
+    pub fn with_params_and_config(
+        params: SubagentExecuteParams,
+        config: EnhancedExecutionConfig,
+    ) -> Self {
+        Self { default_params: params, execution_config: config }
     }
 
     /// Execute a single task with retry and fallback support.
     ///
     /// This is a helper method that demonstrates how to integrate retry/fallback logic.
     /// In a real implementation, this would call the actual subagent execution logic.
+    #[allow(dead_code)]
     async fn execute_task_with_retry(
         &self,
         task: &SubtaskSpec,
@@ -208,6 +204,7 @@ impl EnhancedSubagentAdapter {
     }
 
     /// Apply fallback strategy to a failed task.
+    #[allow(dead_code)]
     async fn apply_fallback(
         &self,
         task: &SubtaskSpec,
@@ -231,13 +228,11 @@ impl EnhancedSubagentAdapter {
                     }),
                 })
             }
-            agent_ports::FallbackStrategy::UseDefault(value) => {
-                Some(SubagentResult {
-                    task_id: uuid::Uuid::new_v4(),
-                    ok: true,
-                    output: value.clone(),
-                })
-            }
+            agent_ports::FallbackStrategy::UseDefault(value) => Some(SubagentResult {
+                task_id: uuid::Uuid::new_v4(),
+                ok: true,
+                output: value.clone(),
+            }),
             agent_ports::FallbackStrategy::UseSimplified { task_goal, task_input } => {
                 // In real implementation, execute simplified version
                 Some(SubagentResult {
@@ -286,11 +281,7 @@ impl SubagentPort for EnhancedSubagentAdapter {
         for (idx, task) in plan.tasks.iter().enumerate() {
             let task_id = uuid::Uuid::new_v4();
 
-            sink.push(AgentEvent::SubagentTaskStarted {
-                run_id,
-                task_id,
-                goal: task.goal.clone(),
-            });
+            sink.push(AgentEvent::SubagentTaskStarted { run_id, task_id, goal: task.goal.clone() });
 
             let permit = sem
                 .clone()
@@ -338,17 +329,9 @@ impl SubagentPort for EnhancedSubagentAdapter {
         while let Some(joined) = join_set.join_next().await {
             match joined {
                 Ok(Ok((idx, task_id, output))) => {
-                    let ok = !output.get("error").is_some();
-                    let result = SubagentResult {
-                        task_id,
-                        ok,
-                        output,
-                    };
-                    sink.push(AgentEvent::SubagentTaskCompleted {
-                        run_id,
-                        task_id,
-                        ok,
-                    });
+                    let ok = output.get("error").is_none();
+                    let result = SubagentResult { task_id, ok, output };
+                    sink.push(AgentEvent::SubagentTaskCompleted { run_id, task_id, ok });
                     indexed_results.push((idx, result));
                 }
                 Ok(Err(_error)) => {
@@ -370,7 +353,8 @@ impl SubagentPort for EnhancedSubagentAdapter {
         sink.push(AgentEvent::SubagentResultsMerged {
             run_id,
             strategy: "enhanced".to_string(),
-            result_summary: format!("{} results ({} successful, {} failed)", 
+            result_summary: format!(
+                "{} results ({} successful, {} failed)",
                 results.len(),
                 results.iter().filter(|r| r.ok).count(),
                 results.iter().filter(|r| !r.ok).count()
@@ -409,10 +393,7 @@ impl SubagentPort for EnhancedSubagentAdapter {
             }
         });
 
-        state.messages.push(ChatMessage {
-            role: "assistant".into(),
-            content: payload,
-        });
+        state.messages.push(ChatMessage { role: "assistant".into(), content: payload });
 
         Ok(state)
     }
@@ -431,20 +412,12 @@ mod tests {
 
         let plan = SubtaskPlan {
             tasks: vec![
-                SubtaskSpec {
-                    goal: "Task 1".to_string(),
-                    input: Value::Null,
-                    budget_steps: 5,
-                },
-                SubtaskSpec {
-                    goal: "Task 2".to_string(),
-                    input: Value::Null,
-                    budget_steps: 5,
-                },
+                SubtaskSpec { goal: "Task 1".to_string(), input: Value::Null, budget_steps: 5 },
+                SubtaskSpec { goal: "Task 2".to_string(), input: Value::Null, budget_steps: 5 },
             ],
         };
 
-        let mut sink = EventSink::new();
+        let mut sink = EventSink::default();
         let results = adapter
             .execute_plan(
                 run_id,
@@ -464,12 +437,8 @@ mod tests {
     #[tokio::test]
     async fn test_enhanced_adapter_with_retry_config() {
         let config = EnhancedExecutionConfig::with_retry()
-            .with_retry_policy(
-                RetryPolicy::default()
-                    .with_max_retries(3)
-                    .with_jitter(true)
-            );
-        
+            .with_retry_policy(RetryPolicy::default().with_max_retries(3).with_jitter(true));
+
         let adapter = EnhancedSubagentAdapter::with_config(config);
         let run_id = RunId::new_v4();
         let thread_id = ThreadId::new_v4();
@@ -482,7 +451,7 @@ mod tests {
             }],
         };
 
-        let mut sink = EventSink::new();
+        let mut sink = EventSink::default();
         let results = adapter
             .execute_plan(
                 run_id,
@@ -503,7 +472,7 @@ mod tests {
     async fn test_enhanced_adapter_fail_fast() {
         let config = EnhancedExecutionConfig::fail_fast();
         let adapter = EnhancedSubagentAdapter::with_config(config);
-        
+
         assert!(!adapter.execution_config.enable_retry);
         assert!(matches!(
             adapter.execution_config.fallback_strategy,
@@ -515,12 +484,9 @@ mod tests {
     fn test_execution_config_presets() {
         let with_retry = EnhancedExecutionConfig::with_retry();
         assert!(with_retry.enable_retry);
-        
+
         let fail_fast = EnhancedExecutionConfig::fail_fast();
         assert!(!fail_fast.enable_retry);
-        assert!(matches!(
-            fail_fast.fallback_strategy,
-            agent_ports::FallbackStrategy::FailFast
-        ));
+        assert!(matches!(fail_fast.fallback_strategy, agent_ports::FallbackStrategy::FailFast));
     }
 }

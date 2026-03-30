@@ -11,12 +11,10 @@
 #![allow(dead_code)]
 
 use agent_adapters::EnhancedSubagentAdapter;
-use agent_loop_runtime::{FallbackExecutor, RetryExecutor, RunBudget};
+use agent_loop_runtime::RunBudget;
 use agent_ports::{
-    error_helpers, merger_presets, DecompositionStrategy,
-    FallbackStrategy, MergeContext, MergeStrategy,
-    ResultMerger, RetryPolicy,
-    TaskTemplate, VotingMethod,
+    error_helpers, merger_presets, DecompositionStrategy, FallbackStrategy, RetryPolicy,
+    TaskTemplate,
 };
 
 /// Example 1: LLM-based task decomposition with retry and fallback
@@ -84,8 +82,7 @@ async fn example_template_consensus() {
     let _strategy = DecompositionStrategy::hybrid(template.clone());
 
     // Create consensus merger configuration
-    let _consensus_config = agent_ports::ConsensusConfig::supermajority()
-        .with_vote_field("answer");
+    let _consensus_config = agent_ports::ConsensusConfig::supermajority().with_vote_field("answer");
 
     println!("\nConsensus merger configured:");
     println!("  - Method: Supermajority (67% threshold)");
@@ -141,7 +138,7 @@ fn example_error_handling() {
     for error in errors {
         let failure = error_helpers::classify_error_msg(error);
         let should_retry = failure.should_retry();
-        
+
         println!("Error: '{}'", error);
         println!("  - Type: {:?}", std::mem::discriminant(&failure));
         println!("  - Should retry: {}", should_retry);
@@ -149,10 +146,8 @@ fn example_error_handling() {
     }
 
     // Demonstrate retry delay calculation
-    let policy = RetryPolicy::default()
-        .with_initial_delay(1000)
-        .with_backoff_factor(2.0)
-        .with_jitter(false);
+    let policy =
+        RetryPolicy::default().with_initial_delay(1000).with_backoff_factor(2.0).with_jitter(false);
 
     println!("Retry delay schedule (exponential backoff):");
     for attempt in 1..=5 {
@@ -175,21 +170,26 @@ fn example_budget_presets() {
     ];
 
     println!("Budget presets comparison:\n");
-    println!("{:<20} {:>8} {:>10} {:>12} {:>15}", 
-             "Preset", "Turns", "Tasks", "Concurrent", "Token Budget");
+    println!(
+        "{:<20} {:>8} {:>10} {:>12} {:>15}",
+        "Preset", "Turns", "Tasks", "Concurrent", "Token Budget"
+    );
     println!("{:-<70}", "");
 
     for (name, budget) in &budgets {
-        let tokens = budget.token_budget
+        let tokens = budget
+            .token_budget
             .map(|t| if t >= 1000 { format!("{}k", t / 1000) } else { t.to_string() })
             .unwrap_or("∞".to_string());
-        
-        println!("{:<20} {:>8} {:>10} {:>12} {:>15}",
-                 name,
-                 budget.max_turns,
-                 budget.max_subagent_tasks,
-                 budget.max_concurrent_subagents,
-                 tokens);
+
+        println!(
+            "{:<20} {:>8} {:>10} {:>12} {:>15}",
+            name,
+            budget.max_turns,
+            budget.max_subagent_tasks,
+            budget.max_concurrent_subagents,
+            tokens
+        );
     }
 
     // Validate a budget
