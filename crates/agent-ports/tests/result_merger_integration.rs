@@ -1,19 +1,15 @@
 //! Integration tests for result merger strategies.
 
 use agent_ports::{
-    ConcatenateMerger, ConsensusConfig, ConsensusMerger, LlmSummaryMerger, MergeContext,
-    ResultMerger, SubagentResult, VotingMethod,
+    ConcatenateMerger, ConsensusConfig, ConsensusMerger, MergeContext, ResultMerger,
+    SubagentResult, VotingMethod,
 };
 use agent_ports::{RunId, ThreadId};
 use serde_json::json;
 use uuid::Uuid;
 
 fn create_test_result(ok: bool, output: serde_json::Value) -> SubagentResult {
-    SubagentResult {
-        task_id: Uuid::new_v4(),
-        ok,
-        output,
-    }
+    SubagentResult { task_id: Uuid::new_v4(), ok, output }
 }
 
 fn create_merge_context() -> MergeContext {
@@ -47,11 +43,8 @@ async fn test_concatenate_merger() {
 
 #[tokio::test]
 async fn test_consensus_majority_vote() {
-    let config = ConsensusConfig {
-        voting_method: VotingMethod::Majority,
-        threshold: 0.5,
-        vote_field: None,
-    };
+    let config =
+        ConsensusConfig { voting_method: VotingMethod::Majority, threshold: 0.5, vote_field: None };
     let merger = ConsensusMerger::new(config);
 
     // Create results where "option_a" should win by majority
@@ -72,11 +65,8 @@ async fn test_consensus_majority_vote() {
 
 #[tokio::test]
 async fn test_consensus_weighted_vote() {
-    let config = ConsensusConfig {
-        voting_method: VotingMethod::Weighted,
-        threshold: 0.5,
-        vote_field: None,
-    };
+    let config =
+        ConsensusConfig { voting_method: VotingMethod::Weighted, threshold: 0.5, vote_field: None };
     let merger = ConsensusMerger::new(config);
 
     // Create results with confidence scores
@@ -96,11 +86,8 @@ async fn test_consensus_weighted_vote() {
 
 #[tokio::test]
 async fn test_consensus_approval_vote() {
-    let config = ConsensusConfig {
-        voting_method: VotingMethod::Approval,
-        threshold: 0.5,
-        vote_field: None,
-    };
+    let config =
+        ConsensusConfig { voting_method: VotingMethod::Approval, threshold: 0.5, vote_field: None };
     let merger = ConsensusMerger::new(config);
 
     // Create results with approval status
@@ -152,11 +139,7 @@ fn test_voting_method_serialization() {
     ];
 
     for method in methods {
-        let config = ConsensusConfig {
-            voting_method: method,
-            threshold: 0.5,
-            vote_field: None,
-        };
+        let config = ConsensusConfig { voting_method: method, threshold: 0.5, vote_field: None };
         let serialized = serde_json::to_string(&config).unwrap();
         let deserialized: ConsensusConfig = serde_json::from_str(&serialized).unwrap();
         assert_eq!(

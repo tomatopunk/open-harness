@@ -35,19 +35,11 @@ pub type PortResult<T> = Result<T, PortError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskFailure {
     /// Transient errors that may succeed on retry (network timeouts, temporary failures)
-    Transient {
-        reason: String,
-        retryable: bool,
-        suggested_delay_ms: Option<u64>,
-    },
+    Transient { reason: String, retryable: bool, suggested_delay_ms: Option<u64> },
     /// Permanent errors that should not be retried (invalid parameters, tool not found)
     Permanent { reason: String },
     /// Budget exceeded (time, tokens, retry count)
-    BudgetExceeded {
-        budget_type: BudgetType,
-        current: u64,
-        limit: u64,
-    },
+    BudgetExceeded { budget_type: BudgetType, current: u64, limit: u64 },
     /// Timeout errors (task took too long)
     Timeout { elapsed_ms: u64, timeout_ms: u64 },
     /// System errors (internal bugs, invariant violations)
@@ -90,11 +82,7 @@ impl TaskFailure {
     /// Create a transient error with optional suggested delay.
     #[must_use]
     pub fn transient(reason: impl Into<String>, suggested_delay_ms: Option<u64>) -> Self {
-        Self::Transient {
-            reason: reason.into(),
-            retryable: true,
-            suggested_delay_ms,
-        }
+        Self::Transient { reason: reason.into(), retryable: true, suggested_delay_ms }
     }
 
     /// Create a permanent error.
@@ -136,7 +124,11 @@ impl Default for RetryPolicy {
             backoff_factor: 2.0,
             jitter: true,
             retry_on: vec![
-                TaskFailure::Transient { reason: String::new(), retryable: true, suggested_delay_ms: None },
+                TaskFailure::Transient {
+                    reason: String::new(),
+                    retryable: true,
+                    suggested_delay_ms: None,
+                },
                 TaskFailure::Timeout { elapsed_ms: 0, timeout_ms: 0 },
             ],
         }
@@ -224,9 +216,10 @@ impl RetryPolicy {
 }
 
 /// Fallback strategy for handling unrecoverable failures.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum FallbackStrategy {
     /// Skip the failed task and continue with others
+    #[default]
     SkipAndContinue,
     /// Use a default value
     UseDefault(serde_json::Value),
@@ -238,19 +231,13 @@ pub enum FallbackStrategy {
     RetryDegraded { max_retries: u32, reduced_timeout_ms: Option<u64> },
 }
 
-impl Default for FallbackStrategy {
-    fn default() -> Self {
-        Self::SkipAndContinue
-    }
-}
-
 // Convert TaskFailure to PortError for easier error handling
 impl From<TaskFailure> for PortError {
     fn from(failure: TaskFailure) -> Self {
         match failure {
-            TaskFailure::Transient { reason, .. } | TaskFailure::Permanent { reason } | TaskFailure::System { reason, .. } => {
-                PortError::Subagent(reason)
-            }
+            TaskFailure::Transient { reason, .. }
+            | TaskFailure::Permanent { reason }
+            | TaskFailure::System { reason, .. } => PortError::Subagent(reason),
             TaskFailure::Timeout { elapsed_ms, timeout_ms } => {
                 PortError::Subagent(format!("Task timeout: {elapsed_ms}ms exceeded {timeout_ms}ms"))
             }
@@ -386,7 +373,11 @@ pub mod error_helpers {
 
     /// Create a budget exceeded failure.
     #[must_use]
-    pub fn budget_exceeded_failure(budget_type: BudgetType, current: u64, limit: u64) -> TaskFailure {
+    pub fn budget_exceeded_failure(
+        budget_type: BudgetType,
+        current: u64,
+        limit: u64,
+    ) -> TaskFailure {
         TaskFailure::budget_exceeded(budget_type, current, limit)
     }
 

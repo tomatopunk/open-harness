@@ -79,7 +79,7 @@ impl Default for LlmPlannerConfig {
 }
 
 /// Template-based decomposition configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskTemplate {
     /// Template identifier
     pub id: String,
@@ -93,22 +93,14 @@ pub struct TaskTemplate {
     pub allow_extension: bool,
 }
 
-impl Default for TaskTemplate {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            description: String::new(),
-            goal_pattern: String::new(),
-            subtasks: vec![],
-            allow_extension: false,
-        }
-    }
-}
-
 impl TaskTemplate {
     /// Create a new task template.
     #[must_use]
-    pub fn new(id: impl Into<String>, description: impl Into<String>, goal_pattern: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        description: impl Into<String>,
+        goal_pattern: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             description: description.into(),
@@ -120,7 +112,12 @@ impl TaskTemplate {
 
     /// Add a subtask to the template.
     #[must_use]
-    pub fn with_subtask(mut self, goal: impl Into<String>, input: Option<Value>, budget_steps: u32) -> Self {
+    pub fn with_subtask(
+        mut self,
+        goal: impl Into<String>,
+        input: Option<Value>,
+        budget_steps: u32,
+    ) -> Self {
         self.subtasks.push(SubtaskSpec {
             goal: goal.into(),
             input: input.unwrap_or(Value::Null),
@@ -153,16 +150,12 @@ impl TaskTemplate {
     /// Create a template for research tasks.
     #[must_use]
     pub fn research_template() -> Self {
-        Self::new(
-            "research",
-            "Research and analyze a topic",
-            "分析.*研究.*调研|research|analyze",
-        )
-        .with_subtask("收集背景信息", None, 5)
-        .with_subtask("识别关键趋势", None, 8)
-        .with_subtask("分析主要参与者", None, 8)
-        .with_subtask("总结发现", None, 5)
-        .with_extension(true)
+        Self::new("research", "Research and analyze a topic", "分析.*研究.*调研|research|analyze")
+            .with_subtask("收集背景信息", None, 5)
+            .with_subtask("识别关键趋势", None, 8)
+            .with_subtask("分析主要参与者", None, 8)
+            .with_subtask("总结发现", None, 5)
+            .with_extension(true)
     }
 
     /// Create a template for code review tasks.
@@ -206,11 +199,7 @@ impl HybridConfig {
     /// Create a new hybrid configuration.
     #[must_use]
     pub fn new(template: TaskTemplate, llm_config: LlmPlannerConfig) -> Self {
-        Self {
-            template,
-            llm_config,
-            min_similarity: 0.7,
-        }
+        Self { template, llm_config, min_similarity: 0.7 }
     }
 
     /// Set the minimum similarity threshold.
@@ -223,28 +212,19 @@ impl HybridConfig {
     /// Create a hybrid config for research tasks.
     #[must_use]
     pub fn research_hybrid() -> Self {
-        Self::new(
-            TaskTemplate::research_template(),
-            LlmPlannerConfig::default(),
-        )
+        Self::new(TaskTemplate::research_template(), LlmPlannerConfig::default())
     }
 
     /// Create a hybrid config for data validation tasks.
     #[must_use]
     pub fn data_validation_hybrid() -> Self {
-        Self::new(
-            TaskTemplate::data_validation_template(),
-            LlmPlannerConfig::default(),
-        )
+        Self::new(TaskTemplate::data_validation_template(), LlmPlannerConfig::default())
     }
 
     /// Create a hybrid config for code review tasks.
     #[must_use]
     pub fn code_review_hybrid() -> Self {
-        Self::new(
-            TaskTemplate::code_review_template(),
-            LlmPlannerConfig::default(),
-        )
+        Self::new(TaskTemplate::code_review_template(), LlmPlannerConfig::default())
     }
 }
 
@@ -278,10 +258,7 @@ impl DecompositionStrategy {
     /// Create an LLM-based planning strategy with custom max subtasks.
     #[must_use]
     pub fn llm_planned_with_limit(max_subtasks: u32) -> Self {
-        Self::LlmPlanned(LlmPlannerConfig {
-            max_subtasks,
-            ..Default::default()
-        })
+        Self::LlmPlanned(LlmPlannerConfig { max_subtasks, ..Default::default() })
     }
 
     /// Create a template-based strategy with predefined templates.
@@ -360,7 +337,13 @@ impl LlmTaskDecomposer {
             context
                 .available_tools
                 .iter()
-                .map(|t| format!("- {}: {}", t.name, t.description.as_deref().unwrap_or("No description")))
+                .map(|t| {
+                    format!(
+                        "- {}: {}",
+                        t.name,
+                        t.description.as_deref().unwrap_or("No description")
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
@@ -391,16 +374,13 @@ Example:
     fn parse_llm_response(&self, content: &str) -> PortResult<SubtaskPlan> {
         // Try to extract JSON array from the response
         let json_text = content.trim();
-        
+
         // Handle markdown code blocks if present
         let json_text = json_text
             .strip_prefix("```json")
             .or_else(|| json_text.strip_prefix("```"))
             .unwrap_or(json_text);
-        let json_text = json_text
-            .strip_suffix("```")
-            .unwrap_or(json_text)
-            .trim();
+        let json_text = json_text.strip_suffix("```").unwrap_or(json_text).trim();
 
         let tasks: Vec<SubtaskSpec> = serde_json::from_str(json_text).map_err(|e| {
             crate::PortError::Subagent(format!(
@@ -424,9 +404,7 @@ Example:
         }
 
         if sanitized_tasks.is_empty() {
-            return Err(crate::PortError::Subagent(
-                "LLM returned no valid subtasks".to_string()
-            ));
+            return Err(crate::PortError::Subagent("LLM returned no valid subtasks".to_string()));
         }
 
         // Apply budget constraint
@@ -511,8 +489,8 @@ impl TemplateTaskDecomposer {
             crate::PortError::Subagent("LLM port not configured for template extension".to_string())
         })?;
 
-        let existing_tasks_json = serde_json::to_string_pretty(&template.subtasks)
-            .unwrap_or_else(|_| "[]".to_string());
+        let existing_tasks_json =
+            serde_json::to_string_pretty(&template.subtasks).unwrap_or_else(|_| "[]".to_string());
 
         let extension_prompt = format!(
             r#"You are an expert task planner. You have a template for a goal, but it may need customization.
@@ -537,14 +515,17 @@ Return format: JSON array of subtasks.
 Additional Subtasks:"#,
             goal = goal,
             existing_tasks = existing_tasks_json,
-            max_additional = context.budget.max_subagent_tasks.saturating_sub(template.subtasks.len() as u32)
+            max_additional =
+                context.budget.max_subagent_tasks.saturating_sub(template.subtasks.len() as u32)
         );
 
         let llm_context = LlmTurnContext {
             run_id: context.run_id,
             thread_id: context.thread_id,
             messages: vec![Value::String(extension_prompt)],
-            system_prompt: Some("You are an expert task planner that extends template plans.".to_string()),
+            system_prompt: Some(
+                "You are an expert task planner that extends template plans.".to_string(),
+            ),
             model_name: None,
             policy_version: None,
             is_plan_mode: true,
@@ -554,14 +535,13 @@ Additional Subtasks:"#,
 
         let llm_output = llm_port.infer_turn(llm_context).await?;
 
-        let content = llm_output
-            .assistant_text
-            .ok_or_else(|| crate::PortError::Subagent("LLM returned no content for template extension".to_string()))?;
+        let content = llm_output.assistant_text.ok_or_else(|| {
+            crate::PortError::Subagent("LLM returned no content for template extension".to_string())
+        })?;
 
         // Parse the additional tasks
-        let additional_tasks: Vec<SubtaskSpec> = serde_json::from_str(content.trim()).unwrap_or_else(|_| {
-            vec![]
-        });
+        let additional_tasks: Vec<SubtaskSpec> =
+            serde_json::from_str(content.trim()).unwrap_or_else(|_| vec![]);
 
         Ok(additional_tasks)
     }
@@ -615,8 +595,8 @@ impl HybridTaskDecomposer {
         existing_tasks: &[SubtaskSpec],
         context: &TaskContext,
     ) -> PortResult<Vec<SubtaskSpec>> {
-        let existing_tasks_json = serde_json::to_string_pretty(existing_tasks)
-            .unwrap_or_else(|_| "[]".to_string());
+        let existing_tasks_json =
+            serde_json::to_string_pretty(existing_tasks).unwrap_or_else(|_| "[]".to_string());
 
         let gap_filling_prompt = format!(
             r#"You are an expert task planner. You have an initial set of subtasks for a goal, but some important steps may be missing.
@@ -642,14 +622,18 @@ Return format: JSON array of subtasks with same structure as existing tasks.
 Missing Subtasks:"#,
             goal = goal,
             existing_tasks = existing_tasks_json,
-            max_additional = self.config.llm_config.max_subtasks.saturating_sub(existing_tasks.len() as u32)
+            max_additional =
+                self.config.llm_config.max_subtasks.saturating_sub(existing_tasks.len() as u32)
         );
 
         let llm_context = LlmTurnContext {
             run_id: context.run_id,
             thread_id: context.thread_id,
             messages: vec![Value::String(gap_filling_prompt)],
-            system_prompt: Some("You are an expert task planner that identifies missing steps in task plans.".to_string()),
+            system_prompt: Some(
+                "You are an expert task planner that identifies missing steps in task plans."
+                    .to_string(),
+            ),
             model_name: self.config.llm_config.model.clone(),
             policy_version: None,
             is_plan_mode: true,
@@ -659,15 +643,16 @@ Missing Subtasks:"#,
 
         let llm_output = self.llm_port.infer_turn(llm_context).await?;
 
-        let content = llm_output
-            .assistant_text
-            .ok_or_else(|| crate::PortError::Subagent("LLM returned no content for gap filling".to_string()))?;
+        let content = llm_output.assistant_text.ok_or_else(|| {
+            crate::PortError::Subagent("LLM returned no content for gap filling".to_string())
+        })?;
 
         // Parse the additional tasks
-        let additional_tasks: Vec<SubtaskSpec> = serde_json::from_str(content.trim()).unwrap_or_else(|_| {
-            // If parsing fails, return empty vec (no additional tasks)
-            vec![]
-        });
+        let additional_tasks: Vec<SubtaskSpec> = serde_json::from_str(content.trim())
+            .unwrap_or_else(|_| {
+                // If parsing fails, return empty vec (no additional tasks)
+                vec![]
+            });
 
         Ok(additional_tasks)
     }
@@ -728,14 +713,8 @@ mod tests {
         let run_id = RunId::new_v4();
         let budget = DecompositionBudget::default();
 
-        let ctx = TaskContext::new(
-            thread_id,
-            run_id,
-            "test goal".to_string(),
-            vec![],
-            vec![],
-            budget,
-        );
+        let ctx =
+            TaskContext::new(thread_id, run_id, "test goal".to_string(), vec![], vec![], budget);
 
         assert_eq!(ctx.thread_id, thread_id);
         assert_eq!(ctx.run_id, run_id);
@@ -744,8 +723,8 @@ mod tests {
 
     #[test]
     fn template_decomposer_no_match() {
-        let decomposer = TemplateTaskDecomposer::new(vec![]);
-        let ctx = TaskContext::new(
+        let _decomposer = TemplateTaskDecomposer::new(vec![]);
+        let _ctx = TaskContext::new(
             ThreadId::new_v4(),
             RunId::new_v4(),
             "test".to_string(),
@@ -784,7 +763,7 @@ mod tests {
     fn task_template_builder() {
         let template = TaskTemplate::new("test", "Test template", "test.*")
             .with_subtask("Task 1", None, 5)
-            .with_subtask("Task 2", Some(Value::String("input")), 10)
+            .with_subtask("Task 2", Some(Value::String("input".to_string())), 10)
             .with_extension(true);
 
         assert_eq!(template.id, "test");
@@ -825,11 +804,8 @@ mod tests {
 
     #[test]
     fn hybrid_config_builder() {
-        let config = HybridConfig::new(
-            TaskTemplate::default(),
-            LlmPlannerConfig::default(),
-        )
-        .with_min_similarity(0.9);
+        let config = HybridConfig::new(TaskTemplate::default(), LlmPlannerConfig::default())
+            .with_min_similarity(0.9);
 
         assert_eq!(config.min_similarity, 0.9);
     }

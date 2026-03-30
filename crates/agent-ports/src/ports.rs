@@ -210,19 +210,23 @@ pub trait ThreadStatePort: Send + Sync {
 pub trait TemplateStoragePort: Send + Sync {
     /// Get all templates.
     async fn get_all_templates(&self) -> PortResult<Vec<crate::TaskTemplate>>;
-    
+
     /// Get a template by ID.
     async fn get_template(&self, id: &str) -> PortResult<Option<crate::TaskTemplate>>;
-    
+
     /// Find a matching template for a goal.
-    async fn find_matching_template(&self, goal: &str, threshold: f64) -> PortResult<Option<crate::TaskTemplate>>;
-    
+    async fn find_matching_template(
+        &self,
+        goal: &str,
+        threshold: f64,
+    ) -> PortResult<Option<crate::TaskTemplate>>;
+
     /// Create a new template.
     async fn create_template(&self, template: &crate::TaskTemplate) -> PortResult<()>;
-    
+
     /// Update an existing template.
     async fn update_template(&self, template: &crate::TaskTemplate) -> PortResult<()>;
-    
+
     /// Delete a template.
     async fn delete_template(&self, id: &str) -> PortResult<()>;
 }

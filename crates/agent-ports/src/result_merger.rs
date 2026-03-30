@@ -68,7 +68,11 @@ pub trait ResultMerger: Send + Sync {
     /// # Returns
     /// * `Ok(MergedResult)` - The merged result
     /// * `Err(PortError)` - Error during merging
-    async fn merge(&self, ctx: &MergeContext, results: &[SubagentResult]) -> PortResult<MergedResult>;
+    async fn merge(
+        &self,
+        ctx: &MergeContext,
+        results: &[SubagentResult],
+    ) -> PortResult<MergedResult>;
 
     /// Get the strategy name for logging/observability.
     fn strategy_name(&self) -> &'static str;
@@ -87,11 +91,7 @@ pub struct ConcatenateConfig {
 
 impl Default for ConcatenateConfig {
     fn default() -> Self {
-        Self {
-            separator: "\n\n---\n\n".to_string(),
-            preserve_order: true,
-            include_metadata: true,
-        }
+        Self { separator: "\n\n---\n\n".to_string(), preserve_order: true, include_metadata: true }
     }
 }
 
@@ -114,9 +114,13 @@ impl ConcatenateMerger {
 
 #[async_trait::async_trait]
 impl ResultMerger for ConcatenateMerger {
-    async fn merge(&self, _ctx: &MergeContext, results: &[SubagentResult]) -> PortResult<MergedResult> {
+    async fn merge(
+        &self,
+        _ctx: &MergeContext,
+        results: &[SubagentResult],
+    ) -> PortResult<MergedResult> {
         let mut merged = MergedResult::default();
-        
+
         let parts: Vec<String> = results
             .iter()
             .map(|r| {
@@ -169,11 +173,7 @@ impl LlmSummaryConfig {
     /// Create a new LLM summary configuration.
     #[must_use]
     pub fn new(summary_prompt: impl Into<String>) -> Self {
-        Self {
-            summary_prompt: summary_prompt.into(),
-            model: None,
-            max_summary_tokens: 500,
-        }
+        Self { summary_prompt: summary_prompt.into(), model: None, max_summary_tokens: 500 }
     }
 
     /// Set the model to use.
@@ -281,7 +281,11 @@ impl LlmSummaryMerger {
 
 #[async_trait::async_trait]
 impl ResultMerger for LlmSummaryMerger {
-    async fn merge(&self, _ctx: &MergeContext, results: &[SubagentResult]) -> PortResult<MergedResult> {
+    async fn merge(
+        &self,
+        _ctx: &MergeContext,
+        results: &[SubagentResult],
+    ) -> PortResult<MergedResult> {
         if results.is_empty() {
             return Ok(MergedResult::default());
         }
@@ -357,11 +361,7 @@ pub struct ConsensusConfig {
 
 impl Default for ConsensusConfig {
     fn default() -> Self {
-        Self {
-            voting_method: VotingMethod::Majority,
-            threshold: 0.5,
-            vote_field: None,
-        }
+        Self { voting_method: VotingMethod::Majority, threshold: 0.5, vote_field: None }
     }
 }
 
@@ -369,11 +369,7 @@ impl ConsensusConfig {
     /// Create a new consensus configuration.
     #[must_use]
     pub fn new(voting_method: VotingMethod, threshold: f64) -> Self {
-        Self {
-            voting_method,
-            threshold,
-            vote_field: None,
-        }
+        Self { voting_method, threshold, vote_field: None }
     }
 
     /// Set the vote field to extract from outputs.
@@ -436,7 +432,7 @@ impl ConsensusMerger {
             // Extract specific field if outputs are objects
             result.output.get(field).map_or_else(
                 || result.output.to_string(),
-                |v| v.as_str().unwrap_or(&v.to_string()).to_string()
+                |v| v.as_str().unwrap_or(&v.to_string()).to_string(),
             )
         } else {
             // Use the entire output as string
@@ -473,16 +469,16 @@ impl ConsensusMerger {
         for result in results {
             let value = self.extract_vote_value(result);
             // Extract confidence score if available, default to 1.0
-            let weight = result.output
-                .get("confidence")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(1.0);
+            let weight = result.output.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
 
             *weighted_counts.entry(value).or_insert(0.0) += weight;
             total_weight += weight;
         }
 
-        let (winner, weight) = weighted_counts.into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+        let (winner, weight) = weighted_counts
+            .into_iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
         let agreement = if total_weight > 0.0 { weight / total_weight } else { 0.0 };
 
         (winner, agreement)
@@ -540,7 +536,8 @@ impl ConsensusMerger {
 
         for result in results {
             // Try to extract approval status
-            let approved = result.output
+            let approved = result
+                .output
                 .get("approve")
                 .or_else(|| result.output.get("approval"))
                 .or_else(|| result.output.get("approved"))
@@ -548,7 +545,7 @@ impl ConsensusMerger {
                 .unwrap_or(true); // Default to approve if not specified
 
             let value = self.extract_vote_value(result);
-            
+
             if approved {
                 *approvals.entry(value).or_insert(0) += 1;
             }
@@ -569,7 +566,8 @@ impl ConsensusMerger {
     fn execute_vote(&self, results: &[SubagentResult]) -> (String, f64) {
         match self.config.voting_method {
             VotingMethod::Majority => {
-                let values: Vec<String> = results.iter().map(|r| self.extract_vote_value(r)).collect();
+                let values: Vec<String> =
+                    results.iter().map(|r| self.extract_vote_value(r)).collect();
                 self.majority_vote(&values)
             }
             VotingMethod::Weighted => self.weighted_vote(results),
@@ -581,7 +579,11 @@ impl ConsensusMerger {
 
 #[async_trait::async_trait]
 impl ResultMerger for ConsensusMerger {
-    async fn merge(&self, _ctx: &MergeContext, results: &[SubagentResult]) -> PortResult<MergedResult> {
+    async fn merge(
+        &self,
+        _ctx: &MergeContext,
+        results: &[SubagentResult],
+    ) -> PortResult<MergedResult> {
         if results.is_empty() {
             return Ok(MergedResult::default());
         }
@@ -645,13 +647,15 @@ impl Default for MergeStrategy {
 
 /// Create a merger from a strategy.
 #[must_use]
-pub fn create_merger_from_strategy(strategy: &MergeStrategy, llm_port: Option<Arc<dyn LLMPort>>) -> Box<dyn ResultMerger> {
+pub fn create_merger_from_strategy(
+    strategy: &MergeStrategy,
+    llm_port: Option<Arc<dyn LLMPort>>,
+) -> Box<dyn ResultMerger> {
     match strategy {
         MergeStrategy::Concatenate(config) => Box::new(ConcatenateMerger::new(config.clone())),
         MergeStrategy::LlmSummarized(config) => {
-            let llm_port = llm_port.unwrap_or_else(|| {
-                panic!("LLM port is required for LlmSummarized strategy")
-            });
+            let llm_port = llm_port
+                .unwrap_or_else(|| panic!("LLM port is required for LlmSummarized strategy"));
             Box::new(LlmSummaryMerger::new(config.clone(), llm_port))
         }
         MergeStrategy::Consensus(config) => Box::new(ConsensusMerger::new(config.clone())),
@@ -739,22 +743,18 @@ mod tests {
     use uuid::Uuid;
 
     fn create_test_result(ok: bool, output: Value) -> SubagentResult {
-        SubagentResult {
-            task_id: Uuid::new_v4(),
-            ok,
-            output,
-        }
+        SubagentResult { task_id: Uuid::new_v4(), ok, output }
     }
 
     #[test]
     fn concatenate_merger_basic() {
-        let merger = ConcatenateMerger::with_default_config();
-        let results = vec![
+        let _merger = ConcatenateMerger::with_default_config();
+        let _results = [
             create_test_result(true, Value::String("Result 1".to_string())),
             create_test_result(true, Value::String("Result 2".to_string())),
         ];
 
-        let ctx = MergeContext::new(
+        let _ctx = MergeContext::new(
             ThreadId::new_v4(),
             RunId::new_v4(),
             ThreadState::default(),
@@ -770,7 +770,7 @@ mod tests {
     fn merge_strategy_default() {
         let strategy = MergeStrategy::default();
         match strategy {
-            MergeStrategy::Concatenate(_) => {}, // Expected
+            MergeStrategy::Concatenate(_) => {} // Expected
             _ => panic!("Default strategy should be Concatenate"),
         }
     }
@@ -809,17 +809,10 @@ mod tests {
 
     #[test]
     fn consensus_config_builder() {
-        let config = ConsensusConfig::new(VotingMethod::Borda, 0.6)
-            .with_vote_field("answer");
+        let config = ConsensusConfig::new(VotingMethod::Borda, 0.6).with_vote_field("answer");
 
         assert_eq!(config.threshold, 0.6);
         assert!(matches!(config.voting_method, VotingMethod::Borda));
         assert_eq!(config.vote_field, Some("answer".to_string()));
-    }
-
-    #[test]
-    fn merge_strategy_default() {
-        let strategy = MergeStrategy::default();
-        assert!(matches!(strategy, MergeStrategy::Concatenate(_)));
     }
 }

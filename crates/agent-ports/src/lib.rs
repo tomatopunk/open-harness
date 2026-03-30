@@ -12,6 +12,7 @@ pub mod events;
 pub mod ids;
 pub mod interrupt;
 pub mod llm_routing;
+pub mod memory;
 pub mod ports;
 pub mod result_merger;
 pub mod schema;
@@ -44,7 +45,7 @@ pub use ports::{
 pub use result_merger::{
     create_merger_from_strategy, merger_presets, ConcatenateConfig, ConcatenateMerger,
     ConsensusConfig, ConsensusMerger, LlmSummaryConfig, LlmSummaryMerger, MergeContext,
-    MergedResult, MergeStrategy, ResultMerger, VotingMethod,
+    MergeStrategy, MergedResult, ResultMerger, VotingMethod,
 };
 pub use schema::{
     AGENT_EVENT_SCHEMA_VERSION, CHECKPOINT_RECORD_SCHEMA_VERSION, THREAD_STATE_SCHEMA_VERSION,
