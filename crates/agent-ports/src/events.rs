@@ -116,6 +116,38 @@ pub enum AgentEvent {
         run_id: RunId,
         prompt: Option<String>,
     },
+    /// Task decomposition completed
+    SubagentTaskDecomposed {
+        run_id: RunId,
+        strategy: String,
+        task_count: usize,
+    },
+    /// Task retry attempt
+    SubagentTaskRetrying {
+        run_id: RunId,
+        task_id: uuid::Uuid,
+        attempt: u32,
+        delay_ms: u64,
+    },
+    /// Task fallback strategy applied
+    SubagentTaskFallback {
+        run_id: RunId,
+        task_id: uuid::Uuid,
+        strategy: String,
+    },
+    /// Results merged with strategy
+    SubagentResultsMerged {
+        run_id: RunId,
+        strategy: String,
+        result_summary: String,
+    },
+    /// Budget exceeded
+    BudgetExceeded {
+        run_id: RunId,
+        budget_type: crate::BudgetType,
+        current: u64,
+        limit: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

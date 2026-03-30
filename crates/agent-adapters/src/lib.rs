@@ -7,6 +7,7 @@ pub mod memory_default;
 pub mod persisting_tool_port;
 pub mod skill_default;
 pub mod subagent_default;
+pub mod subagent_enhanced;
 pub mod tool_registry_adapter;
 
 pub use checkpoint_memory::MemoryCheckpointAdapter;
@@ -16,4 +17,5 @@ pub use memory_default::DefaultMemoryAdapter;
 pub use persisting_tool_port::PersistingToolPort;
 pub use skill_default::DefaultSkillAdapter;
 pub use subagent_default::DefaultSubagentAdapter;
+pub use subagent_enhanced::EnhancedSubagentAdapter;
 pub use tool_registry_adapter::{default_echo_manifests, EchoTool, RegistryToolAdapter};

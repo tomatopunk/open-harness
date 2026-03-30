@@ -272,6 +272,14 @@ async fn run_orchestrate_with_state(
         max_concurrent_subagents: governance.subagents.max_concurrent.max(1),
         max_concurrent_tool_calls: 8,
         per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
+        // New budget fields with default values
+        max_retries_per_task: 3,
+        retry_backoff_factor: 2.0,
+        max_total_wall_time: Some(std::time::Duration::from_secs(3600)),
+        token_budget: None,
+        retry_initial_delay_ms: 1000,
+        retry_max_delay_ms: 30000,
+        retry_jitter: true,
     };
     let tool_cfg = ToolLoopConfig { assembly: governance.tool_assembly() };
     let run_cfg = build_inner_run_config(&ctx, &body, governance.as_ref());

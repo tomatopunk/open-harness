@@ -1,0 +1,40 @@
+# Production Budget Configuration
+# 
+# This configuration is optimized for production environments with:
+# - Strict resource limits to control costs
+# - Reasonable timeouts for user experience
+# - Conservative retry policies
+# - Token budget tracking
+
+name: "production-v1"
+base_preset: null  # No inheritance, fully custom
+
+# Core budget parameters
+max_turns: 16
+max_subagent_tasks: 8
+subagent_task_cap_per_response: 4
+max_concurrent_subagents: 4
+max_concurrent_tool_calls: 8
+
+# Timeout configurations (using human-readable format)
+per_subagent_task_timeout: "2m"      # 2 minutes per task
+max_total_wall_time: "30m"           # 30 minutes total
+
+# Retry configuration
+retry:
+  max_retries_per_task: 3            # Retry failed tasks up to 3 times
+  backoff_factor: 2.0                # Exponential backoff (doubles each retry)
+  initial_delay: "1s"                # Start with 1 second delay
+  max_delay: "30s"                   # Cap at 30 seconds
+  jitter: true                       # Add random jitter to prevent thundering herd
+
+# Token budget (optional, set to null for unlimited)
+token_budget: 100000                 # 100k tokens
+
+# Custom labels for categorization and monitoring
+labels:
+  environment: production
+  team: ai-platform
+  cost_center: ml-inference
+  sla_tier: standard
+  region: us-east-1

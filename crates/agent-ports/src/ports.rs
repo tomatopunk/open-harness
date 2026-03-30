@@ -1,6 +1,7 @@
 //! Async ports: LLM, tools, memory, skills, subagents, checkpoints, thread state.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ pub struct ToolCallSpec {
     pub call_id: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubtaskSpec {
     pub goal: String,
     pub input: Value,
@@ -202,6 +203,28 @@ pub trait CheckpointPort: Send + Sync {
 pub trait ThreadStatePort: Send + Sync {
     async fn load(&self, thread_id: ThreadId) -> PortResult<ThreadState>;
     async fn save(&self, state: &ThreadState) -> PortResult<()>;
+}
+
+/// Template storage port - provides persistent storage for task templates.
+#[async_trait]
+pub trait TemplateStoragePort: Send + Sync {
+    /// Get all templates.
+    async fn get_all_templates(&self) -> PortResult<Vec<crate::TaskTemplate>>;
+    
+    /// Get a template by ID.
+    async fn get_template(&self, id: &str) -> PortResult<Option<crate::TaskTemplate>>;
+    
+    /// Find a matching template for a goal.
+    async fn find_matching_template(&self, goal: &str, threshold: f64) -> PortResult<Option<crate::TaskTemplate>>;
+    
+    /// Create a new template.
+    async fn create_template(&self, template: &crate::TaskTemplate) -> PortResult<()>;
+    
+    /// Update an existing template.
+    async fn update_template(&self, template: &crate::TaskTemplate) -> PortResult<()>;
+    
+    /// Delete a template.
+    async fn delete_template(&self, id: &str) -> PortResult<()>;
 }
 
 /// Helper: validate unknown tool names against assembled manifests.

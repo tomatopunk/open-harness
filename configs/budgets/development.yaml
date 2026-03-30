@@ -1,0 +1,37 @@
+# Development Budget Configuration
+#
+# This configuration is optimized for local development with:
+# - Relaxed limits for testing
+# - No time limits for debugging
+# - More retries to handle flaky networks
+# - No token limits
+
+name: "development-v1"
+base_preset: null
+
+# Relaxed limits for development
+max_turns: 32
+max_subagent_tasks: 16
+subagent_task_cap_per_response: 8
+max_concurrent_subagents: 8
+max_concurrent_tool_calls: 16
+
+# Longer timeouts for debugging
+per_subagent_task_timeout: "5m"      # 5 minutes per task
+max_total_wall_time: null            # No total time limit
+
+# More aggressive retry for flaky local testing
+retry:
+  max_retries_per_task: 5            # More retries
+  backoff_factor: 2.0
+  initial_delay: "500ms"             # Faster retries
+  max_delay: "10s"
+  jitter: true
+
+# No token limit for development
+token_budget: null
+
+labels:
+  environment: development
+  team: ai-platform
+  purpose: local-testing

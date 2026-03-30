@@ -1,0 +1,38 @@
+# Testing/CI Budget Configuration
+#
+# This configuration is optimized for CI/CD pipelines with:
+# - Minimal resource usage
+# - Fast feedback (short timeouts)
+# - Minimal retries to fail fast
+# - Low token budget
+
+name: "testing-v1"
+base_preset: null
+
+# Minimal resources for CI
+max_turns: 4
+max_subagent_tasks: 2
+subagent_task_cap_per_response: 2
+max_concurrent_subagents: 2
+max_concurrent_tool_calls: 4
+
+# Short timeouts for fast CI feedback
+per_subagent_task_timeout: "30s"     # 30 seconds per task
+max_total_wall_time: "5m"            # 5 minutes total
+
+# Minimal retries to fail fast in CI
+retry:
+  max_retries_per_task: 1            # Only 1 retry
+  backoff_factor: 1.5                # Less aggressive backoff
+  initial_delay: "100ms"             # Very fast retries
+  max_delay: "1s"
+  jitter: false                      # No jitter for predictable CI times
+
+# Low token budget for CI
+token_budget: 10000                  # 10k tokens
+
+labels:
+  environment: ci
+  team: ai-platform
+  pipeline: test
+  cost_center: ci-cd

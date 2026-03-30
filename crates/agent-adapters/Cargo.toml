@@ -7,6 +7,7 @@ description = "Default port adapters (LLM, tools, memory, skills, subagents, che
 
 [dependencies]
 agent-ports = { path = "../agent-ports" }
+agent-loop-runtime = { path = "../agent-loop-runtime" }
 chrono = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }

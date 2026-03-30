@@ -4,11 +4,14 @@
 
 mod agent_loop_types;
 pub mod budget;
+pub mod budget_tracker;
 mod child_run;
 mod commit_metadata;
+pub mod concurrency;
 mod dispatch;
 mod engine_v2;
 pub mod error;
+mod fallback_executor;
 mod lead_kernel;
 mod lead_outer_superstep;
 mod loop_common;
@@ -18,6 +21,7 @@ pub mod middleware;
 pub mod policy;
 pub mod pregel;
 mod premodel_phase;
+pub mod retry_executor;
 pub mod run_config;
 pub mod runtime_spec;
 mod scheduler;
@@ -29,8 +33,12 @@ mod turn_reducer;
 
 pub use agent_ports::EngineCommand;
 pub use budget::{truncate_subtask_plan, RunBudget};
+pub use budget::{BudgetConfig, BudgetPreset, RetryConfig};
+pub use budget_tracker::{BudgetTracker, BudgetUtilization, BudgetManager, ConcurrencyGuard};
 pub use engine_v2::maybe_resume_from_interrupt;
 pub use error::{AgentLoopError, AgentLoopResult};
+pub use fallback_executor::{FallbackExecutor, FallbackResult};
+pub use retry_executor::{RetryExecutor, classify_common_error};
 pub use loop_engine::{run_agent_loop, AgentLoopDeps, ToolLoopConfig};
 pub use middleware::{AgentLoopMiddleware, MiddlewareChain, NoopMiddleware, TurnContext};
 pub use run_config::AgentLoopRunConfig;

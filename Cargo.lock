@@ -6,6 +6,7 @@ version = 4
 name = "agent-adapters"
 version = "0.1.0"
 dependencies = [
+ "agent-loop-runtime",
  "agent-ports",
  "async-openai",
  "async-trait",
@@ -31,10 +32,13 @@ dependencies = [
  "async-trait",
  "futures",
  "graph-runtime-core",
+ "humantime-serde",
  "protocol-compat",
+ "rand 0.8.5",
  "runtime-kernel",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 1.0.69",
  "tokio",
  "tool-runtime",
@@ -48,6 +52,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1326,6 +1331,16 @@ name = "humantime"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
+]
 
 [[package]]
 name = "hyper"

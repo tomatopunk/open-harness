@@ -1,0 +1,24 @@
+{
+  "name": "research-task-v1",
+  "base_preset": null,
+  "max_turns": 24,
+  "max_subagent_tasks": 12,
+  "subagent_task_cap_per_response": 6,
+  "max_concurrent_subagents": 6,
+  "max_concurrent_tool_calls": 12,
+  "per_subagent_task_timeout": "3m",
+  "max_total_wall_time": "1h",
+  "retry": {
+    "max_retries_per_task": 4,
+    "backoff_factor": 2.0,
+    "initial_delay": "1s",
+    "max_delay": "20s",
+    "jitter": true
+  },
+  "token_budget": 200000,
+  "labels": {
+    "environment": "production",
+    "task_type": "research",
+    "priority": "high"
+  }
+}
