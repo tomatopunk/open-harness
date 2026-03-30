@@ -143,12 +143,21 @@ pub trait MemoryStore: Send + Sync {
 
     async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
         let mut doc = self.load_memory_document(thread_id).await?;
-        doc.facts.push(fact.to_string());
+        // Create a default fact with the provided content
+        let new_fact = crate::memory_document::Fact::new(
+            fact.to_string(),
+            crate::memory_document::FactCategory::default(),
+            0.5, // Default confidence
+            thread_id.to_string(),
+        );
+        doc.add_fact(new_fact);
         self.save_memory_document(thread_id, &doc).await
     }
 
     async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
-        Ok(self.load_memory_document(thread_id).await?.facts)
+        let doc = self.load_memory_document(thread_id).await?;
+        // Return fact contents as strings for backward compatibility
+        Ok(doc.facts.iter().map(|f| f.content.clone()).collect())
     }
 
     /// Threads that have durable memory content (facts or structured user/history JSON).
