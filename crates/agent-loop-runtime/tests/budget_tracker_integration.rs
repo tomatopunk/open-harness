@@ -1,7 +1,7 @@
 //! Integration tests for budget tracking.
 
-use agent_loop_runtime::{BudgetTracker, ConcurrencyGuard};
 use agent_loop_runtime::RunBudget;
+use agent_loop_runtime::{BudgetTracker, ConcurrencyGuard};
 use agent_ports::{RunId, ThreadId};
 use std::time::Duration;
 
@@ -18,10 +18,7 @@ fn test_budget_tracker_creation() {
 
 #[test]
 fn test_token_tracking() {
-    let budget = RunBudget {
-        token_budget: Some(1000),
-        ..Default::default()
-    };
+    let budget = RunBudget { token_budget: Some(1000), ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     tracker.add_tokens(500);
@@ -35,10 +32,7 @@ fn test_token_tracking() {
 
 #[test]
 fn test_remaining_tokens() {
-    let budget = RunBudget {
-        token_budget: Some(1000),
-        ..Default::default()
-    };
+    let budget = RunBudget { token_budget: Some(1000), ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     assert_eq!(tracker.remaining_tokens(), Some(1000));
@@ -52,10 +46,7 @@ fn test_remaining_tokens() {
 
 #[test]
 fn test_retry_tracking() {
-    let budget = RunBudget {
-        max_retries_per_task: 3,
-        ..Default::default()
-    };
+    let budget = RunBudget { max_retries_per_task: 3, ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     let task_id = "task-1";
@@ -74,10 +65,7 @@ fn test_retry_tracking() {
 
 #[test]
 fn test_concurrency_tracking() {
-    let budget = RunBudget {
-        max_concurrent_subagents: 4,
-        ..Default::default()
-    };
+    let budget = RunBudget { max_concurrent_subagents: 4, ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     assert_eq!(tracker.concurrent_tasks(), 0);
@@ -100,20 +88,18 @@ fn test_concurrency_tracking() {
 
 #[test]
 fn test_concurrency_guard() {
-    let budget = RunBudget {
-        max_concurrent_subagents: 2,
-        ..Default::default()
-    };
+    let budget = RunBudget { max_concurrent_subagents: 2, ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     assert_eq!(tracker.concurrent_tasks(), 0);
 
     {
-        let guard1 = ConcurrencyGuard::try_acquire(&tracker).unwrap();
+        let guard1 = ConcurrencyGuard::try_acquire(&tracker).expect("Should acquire first guard");
         assert_eq!(tracker.concurrent_tasks(), 1);
 
         {
-            let guard2 = ConcurrencyGuard::try_acquire(&tracker).unwrap();
+            let guard2 =
+                ConcurrencyGuard::try_acquire(&tracker).expect("Should acquire second guard");
             assert_eq!(tracker.concurrent_tasks(), 2);
 
             // Third should fail
@@ -145,8 +131,8 @@ fn test_utilization_summary() {
     assert!(summary.time.is_some());
     assert!(summary.tokens.is_some());
     assert_eq!(summary.concurrency, 0.0);
-    assert!(summary.time.unwrap() >= 0.0);
-    assert!(summary.tokens.unwrap() == 0.0);
+    assert!(summary.time.expect("time should be some") >= 0.0);
+    assert!(summary.tokens.expect("tokens should be some") == 0.0);
 }
 
 #[test]
@@ -164,10 +150,8 @@ fn test_budget_utilization_threshold() {
 
 #[tokio::test]
 async fn test_time_budget_exceeded() {
-    let budget = RunBudget {
-        max_total_wall_time: Some(Duration::from_millis(100)),
-        ..Default::default()
-    };
+    let budget =
+        RunBudget { max_total_wall_time: Some(Duration::from_millis(100)), ..Default::default() };
     let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), budget);
 
     assert!(!tracker.is_time_budget_exceeded());

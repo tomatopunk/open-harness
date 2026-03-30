@@ -94,17 +94,14 @@ impl BudgetTracker {
     pub fn remaining_tokens(&self) -> Option<u64> {
         self.inner.budget.token_budget.map(|max| {
             let used = self.tokens_used();
-            if used >= max {
-                0
-            } else {
-                max - used
-            }
+            max.saturating_sub(used)
         })
     }
 
     /// Increment retry count for a task.
     pub fn increment_retry(&self, task_id: &str) -> u32 {
-        let mut counts = self.inner.retry_counts.write().unwrap();
+        let mut counts =
+            self.inner.retry_counts.write().expect("Failed to acquire write lock on retry_counts");
         let count = counts.entry(task_id.to_string()).or_insert(0);
         *count += 1;
         *count
@@ -113,7 +110,8 @@ impl BudgetTracker {
     /// Get retry count for a task.
     #[must_use]
     pub fn get_retry_count(&self, task_id: &str) -> u32 {
-        let counts = self.inner.retry_counts.read().unwrap();
+        let counts =
+            self.inner.retry_counts.read().expect("Failed to acquire read lock on retry_counts");
         *counts.get(task_id).unwrap_or(&0)
     }
 
@@ -131,10 +129,7 @@ impl BudgetTracker {
 
     /// Decrement concurrent task count.
     pub fn complete_task(&self) -> usize {
-        self.inner
-            .concurrent_tasks
-            .fetch_sub(1, Ordering::Relaxed)
-            .saturating_sub(1)
+        self.inner.concurrent_tasks.fetch_sub(1, Ordering::Relaxed).saturating_sub(1)
     }
 
     /// Get current concurrent task count.
@@ -159,11 +154,7 @@ impl BudgetTracker {
             exceeded.push(BudgetExceededInfo {
                 budget_type: BudgetType::Time,
                 current: self.elapsed().as_millis() as u64,
-                limit: self
-                    .inner
-                    .budget
-                    .max_total_wall_time
-                    .map_or(0, |d| d.as_millis() as u64),
+                limit: self.inner.budget.max_total_wall_time.map_or(0, |d| d.as_millis() as u64),
             });
         }
 
@@ -184,20 +175,13 @@ impl BudgetTracker {
         let (current, limit) = match budget_type {
             BudgetType::Time => (
                 self.elapsed().as_millis() as u64,
-                self.inner
-                    .budget
-                    .max_total_wall_time
-                    .map_or(0, |d| d.as_millis() as u64),
+                self.inner.budget.max_total_wall_time.map_or(0, |d| d.as_millis() as u64),
             ),
-            BudgetType::Tokens => (
-                self.tokens_used(),
-                self.inner.budget.token_budget.unwrap_or(0),
-            ),
+            BudgetType::Tokens => (self.tokens_used(), self.inner.budget.token_budget.unwrap_or(0)),
             BudgetType::Retries => (0, self.inner.budget.max_retries_per_task as u64),
-            BudgetType::ConcurrentTasks => (
-                self.concurrent_tasks() as u64,
-                self.inner.budget.max_concurrent_subagents as u64,
-            ),
+            BudgetType::ConcurrentTasks => {
+                (self.concurrent_tasks() as u64, self.inner.budget.max_concurrent_subagents as u64)
+            }
             BudgetType::SubagentTasks => (0, self.inner.budget.max_subagent_tasks as u64),
         };
 
@@ -217,11 +201,8 @@ impl BudgetTracker {
             .max_total_wall_time
             .map(|max| (elapsed.as_secs_f64() / max.as_secs_f64()).min(1.0));
 
-        let token_utilization = self
-            .inner
-            .budget
-            .token_budget
-            .map(|max| tokens as f64 / max as f64);
+        let token_utilization =
+            self.inner.budget.token_budget.map(|max| tokens as f64 / max as f64);
 
         let concurrency_utilization =
             concurrent as f64 / self.inner.budget.max_concurrent_subagents as f64;
@@ -272,8 +253,8 @@ impl BudgetUtilization {
     /// Check if any budget is above threshold (e.g., 0.8 = 80%).
     #[must_use]
     pub fn is_above_threshold(&self, threshold: f64) -> bool {
-        self.time.map_or(false, |t| t > threshold)
-            || self.tokens.map_or(false, |tok| tok > threshold)
+        self.time.is_some_and(|t| t > threshold)
+            || self.tokens.is_some_and(|tok| tok > threshold)
             || self.concurrency > threshold
     }
 
@@ -303,9 +284,7 @@ impl ConcurrencyGuard {
             return None;
         }
         tracker.start_task();
-        Some(Self {
-            tracker: tracker.clone(),
-        })
+        Some(Self { tracker: tracker.clone() })
     }
 }
 
@@ -331,11 +310,7 @@ mod tests {
 
     #[test]
     fn test_budget_tracker_creation() {
-        let tracker = BudgetTracker::new(
-            RunId::new_v4(),
-            ThreadId::new_v4(),
-            create_test_budget(),
-        );
+        let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), create_test_budget());
 
         assert_eq!(tracker.tokens_used(), 0);
         assert_eq!(tracker.concurrent_tasks(), 0);
@@ -345,11 +320,7 @@ mod tests {
 
     #[test]
     fn test_token_tracking() {
-        let tracker = BudgetTracker::new(
-            RunId::new_v4(),
-            ThreadId::new_v4(),
-            create_test_budget(),
-        );
+        let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), create_test_budget());
 
         tracker.add_tokens(500);
         assert_eq!(tracker.tokens_used(), 500);
@@ -362,11 +333,7 @@ mod tests {
 
     #[test]
     fn test_retry_tracking() {
-        let tracker = BudgetTracker::new(
-            RunId::new_v4(),
-            ThreadId::new_v4(),
-            create_test_budget(),
-        );
+        let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), create_test_budget());
 
         let task_id = "task-1";
         assert_eq!(tracker.get_retry_count(task_id), 0);
@@ -382,11 +349,7 @@ mod tests {
 
     #[test]
     fn test_concurrency_tracking() {
-        let tracker = BudgetTracker::new(
-            RunId::new_v4(),
-            ThreadId::new_v4(),
-            create_test_budget(),
-        );
+        let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), create_test_budget());
 
         assert_eq!(tracker.concurrent_tasks(), 0);
 
@@ -406,11 +369,7 @@ mod tests {
 
     #[test]
     fn test_utilization_summary() {
-        let tracker = BudgetTracker::new(
-            RunId::new_v4(),
-            ThreadId::new_v4(),
-            create_test_budget(),
-        );
+        let tracker = BudgetTracker::new(RunId::new_v4(), ThreadId::new_v4(), create_test_budget());
 
         let summary = tracker.utilization_summary();
         assert!(summary.time.is_some());
@@ -435,44 +394,45 @@ impl BudgetManager {
     /// Create a new budget manager with built-in presets.
     #[must_use]
     pub fn new() -> Self {
-        let mut manager = Self {
-            configs: HashMap::new(),
-            active_config: "production".to_string(),
-        };
-        
+        let mut manager = Self { configs: HashMap::new(), active_config: "production".to_string() };
+
         // Register built-in configurations
         manager.register_builtin("production", BudgetConfig::production_defaults());
         manager.register_builtin("development", BudgetConfig::development_defaults());
         manager.register_builtin("testing", BudgetConfig::testing_defaults());
-        
+
         manager
     }
-    
+
     /// Register a built-in configuration.
     pub fn register_builtin(&mut self, name: &str, config: BudgetConfig) {
         self.configs.insert(name.to_string(), config);
     }
-    
+
     /// Load configuration from a file and register it.
-    pub fn load_from_file(&mut self, name: &str, path: &str) -> Result<(), crate::budget::ConfigError> {
+    pub fn load_from_file(
+        &mut self,
+        name: &str,
+        path: &str,
+    ) -> Result<(), crate::budget::ConfigError> {
         let config = BudgetConfig::from_file(path)?;
-        
+
         // Validate configuration
         let warnings = config.validate();
         for warning in &warnings {
             tracing::warn!("Budget config '{}' - {}", name, warning);
         }
-        
+
         self.configs.insert(name.to_string(), config);
         Ok(())
     }
-    
+
     /// Set the active configuration by name.
     pub fn set_active(&mut self, name: &str) -> bool {
         if self.configs.contains_key(name) {
             let old_config = self.active_config.clone();
             self.active_config = name.to_string();
-            
+
             // Log configuration change
             tracing::info!(
                 target: "budget_audit",
@@ -480,37 +440,37 @@ impl BudgetManager {
                 new = name,
                 "Budget configuration changed"
             );
-            
+
             true
         } else {
             false
         }
     }
-    
+
     /// Get the active budget configuration.
     #[must_use]
     pub fn get_active_budget(&self) -> Option<RunBudget> {
         self.configs.get(&self.active_config).map(|c| c.to_run_budget())
     }
-    
+
     /// Get a configuration by name.
     #[must_use]
     pub fn get_config(&self, name: &str) -> Option<&BudgetConfig> {
         self.configs.get(name)
     }
-    
+
     /// Get the name of the active configuration.
     #[must_use]
     pub fn active_config_name(&self) -> &str {
         &self.active_config
     }
-    
+
     /// List all registered configuration names.
     #[must_use]
     pub fn list_configs(&self) -> Vec<&String> {
         self.configs.keys().collect()
     }
-    
+
     /// Create a RunBudget from environment variables.
     #[must_use]
     pub fn from_env() -> RunBudget {
@@ -527,42 +487,42 @@ impl Default for BudgetManager {
 #[cfg(test)]
 mod budget_manager_tests {
     use super::*;
-    
+
     #[test]
     fn test_budget_manager_creation() {
         let manager = BudgetManager::new();
-        
+
         assert!(manager.get_config("production").is_some());
         assert!(manager.get_config("development").is_some());
         assert!(manager.get_config("testing").is_some());
         assert_eq!(manager.active_config_name(), "production");
     }
-    
+
     #[test]
     fn test_budget_manager_set_active() {
         let mut manager = BudgetManager::new();
-        
+
         assert!(manager.set_active("development"));
         assert_eq!(manager.active_config_name(), "development");
-        
+
         assert!(!manager.set_active("nonexistent"));
     }
-    
+
     #[test]
     fn test_budget_manager_get_budget() {
         let manager = BudgetManager::new();
-        
+
         let budget = manager.get_active_budget();
         assert!(budget.is_some());
-        
-        let budget = budget.unwrap();
+
+        let budget = budget.expect("Budget should be Some");
         assert_eq!(budget.max_turns, 16); // production default
     }
-    
+
     #[test]
     fn test_budget_manager_list_configs() {
         let manager = BudgetManager::new();
-        
+
         let configs = manager.list_configs();
         assert!(configs.contains(&&"production".to_string()));
         assert!(configs.contains(&&"development".to_string()));

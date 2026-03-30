@@ -72,20 +72,13 @@ impl RetryExecutor {
     }
 
     /// Execute with a simple error classification (all errors are transient).
-    pub async fn execute_simple<F, Fut, T, E>(
-        &self,
-        operation: F,
-    ) -> Result<T, TaskFailure>
+    pub async fn execute_simple<F, Fut, T, E>(&self, operation: F) -> Result<T, TaskFailure>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, E>>,
         E: std::fmt::Display,
     {
-        self.execute(
-            operation,
-            |e| TaskFailure::transient(e.to_string(), None),
-        )
-        .await
+        self.execute(operation, |e| TaskFailure::transient(e.to_string(), None)).await
     }
 
     /// Get the policy for inspection.
@@ -129,7 +122,7 @@ mod tests {
 
     // Note: Integration tests are in tests/retry_fallback_integration.rs
     // Unit tests with closures have complex lifetime requirements
-    
+
     #[test]
     fn test_retry_policy_creation() {
         let policy = RetryPolicy::default()
@@ -137,19 +130,19 @@ mod tests {
             .with_initial_delay(1000)
             .with_max_delay(30000)
             .with_jitter(true);
-        
+
         assert_eq!(policy.max_retries, 3);
         assert_eq!(policy.initial_delay_ms, 1000);
         assert!(policy.jitter);
     }
-    
+
     #[test]
     fn test_retry_delay_calculation() {
         let policy = RetryPolicy::default()
             .with_initial_delay(1000)
             .with_backoff_factor(2.0)
             .with_jitter(false);
-        
+
         assert_eq!(policy.calculate_delay(1), 1000);
         assert_eq!(policy.calculate_delay(2), 2000);
         assert_eq!(policy.calculate_delay(3), 4000);

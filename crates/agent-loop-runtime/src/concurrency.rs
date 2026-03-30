@@ -28,7 +28,7 @@ impl AtomicMetrics {
     pub fn increment_concurrent_tasks(&self) {
         let current = self.concurrent_tasks.fetch_add(1, Ordering::SeqCst) + 1;
         self.total_tasks_started.fetch_add(1, Ordering::SeqCst);
-        
+
         // Update peak concurrency
         let mut peak = self.peak_concurrency.load(Ordering::SeqCst);
         while current > peak {
@@ -106,7 +106,11 @@ impl ConcurrencyController {
     }
 
     /// Acquire a permit for concurrent execution.
-    pub async fn acquire(&self, run_id: RunId, sink: &mut EventSink) -> Result<Permit, BudgetExceeded> {
+    pub async fn acquire(
+        &self,
+        run_id: RunId,
+        sink: &mut EventSink,
+    ) -> Result<Permit<'_>, BudgetExceeded> {
         // Check wall time budget
         let elapsed = self.start_time.elapsed();
         if self.budget.is_wall_time_exceeded(elapsed) {
@@ -122,14 +126,11 @@ impl ConcurrencyController {
 
         // Try to acquire permit
         let permit = self.semaphore.acquire().await.map_err(|_| BudgetExceeded::ConcurrentTasks)?;
-        
+
         // Update metrics
         self.metrics.increment_concurrent_tasks();
-        
-        Ok(Permit {
-            _permit: permit,
-            metrics: Arc::clone(&self.metrics),
-        })
+
+        Ok(Permit { _permit: permit, metrics: Arc::clone(&self.metrics) })
     }
 
     /// Get the metrics tracker.
@@ -173,15 +174,15 @@ mod tests {
     #[test]
     fn test_metrics_tracking() {
         let metrics = Arc::new(AtomicMetrics::new());
-        
+
         metrics.increment_concurrent_tasks();
         assert_eq!(metrics.get_concurrent_tasks(), 1);
         assert_eq!(metrics.get_total_tasks_started(), 1);
-        
+
         metrics.increment_concurrent_tasks();
         assert_eq!(metrics.get_concurrent_tasks(), 2);
         assert_eq!(metrics.get_peak_concurrency(), 2);
-        
+
         metrics.decrement_concurrent_tasks();
         assert_eq!(metrics.get_concurrent_tasks(), 1);
         assert_eq!(metrics.get_total_tasks_completed(), 1);
@@ -191,7 +192,7 @@ mod tests {
     fn test_budget_default() {
         let budget = RunBudget::default();
         let controller = ConcurrencyController::new(budget);
-        
+
         assert!(!controller.is_wall_time_exceeded());
         assert_eq!(controller.metrics().get_concurrent_tasks(), 0);
     }

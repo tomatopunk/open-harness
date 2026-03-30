@@ -83,6 +83,13 @@ async fn subagent_plan_respects_concurrency_budget_events() {
         max_concurrent_subagents: 2,
         max_concurrent_tool_calls: 8,
         per_subagent_task_timeout: Some(std::time::Duration::from_secs(120)),
+        max_retries_per_task: 3,
+        retry_backoff_factor: 2.0,
+        max_total_wall_time: None,
+        token_budget: None,
+        retry_initial_delay_ms: 1000,
+        retry_max_delay_ms: 30000,
+        retry_jitter: true,
     };
     let (_final_state, sink) = run_agent_loop(
         Arc::clone(&graph),

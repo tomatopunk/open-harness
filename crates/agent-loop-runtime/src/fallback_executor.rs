@@ -45,12 +45,10 @@ impl FallbackExecutor {
         Fut: std::future::Future<Output = PortResult<Value>>,
     {
         match &self.strategy {
-            FallbackStrategy::SkipAndContinue => {
-                FallbackResult::Skipped {
-                    task_goal: failed_task.goal.clone(),
-                    failure: failure.clone(),
-                }
-            }
+            FallbackStrategy::SkipAndContinue => FallbackResult::Skipped {
+                task_goal: failed_task.goal.clone(),
+                failure: failure.clone(),
+            },
 
             FallbackStrategy::UseDefault(value) => FallbackResult::UsedDefault {
                 value: value.clone(),
@@ -72,9 +70,7 @@ impl FallbackExecutor {
                         },
                     }
                 } else {
-                    FallbackResult::NoSimplifiedExecutor {
-                        task_goal: task_goal.clone(),
-                    }
+                    FallbackResult::NoSimplifiedExecutor { task_goal: task_goal.clone() }
                 }
             }
 
@@ -117,58 +113,32 @@ impl FallbackExecutor {
 #[derive(Debug, Clone)]
 pub enum FallbackResult {
     /// Task was skipped, continue with other tasks.
-    Skipped {
-        task_goal: String,
-        failure: TaskFailure,
-    },
+    Skipped { task_goal: String, failure: TaskFailure },
 
     /// Used a default value.
-    UsedDefault {
-        value: Value,
-        original_goal: String,
-    },
+    UsedDefault { value: Value, original_goal: String },
 
     /// Successfully executed simplified task.
-    SimplifiedSuccess {
-        result: Value,
-        original_goal: String,
-        simplified_goal: String,
-    },
+    SimplifiedSuccess { result: Value, original_goal: String, simplified_goal: String },
 
     /// Failed to execute simplified task.
-    SimplifiedFailed {
-        original_goal: String,
-        simplified_goal: String,
-        error: String,
-    },
+    SimplifiedFailed { original_goal: String, simplified_goal: String, error: String },
 
     /// No simplified executor was provided.
-    NoSimplifiedExecutor {
-        task_goal: String,
-    },
+    NoSimplifiedExecutor { task_goal: String },
 
     /// Immediately terminated.
-    FailedFast {
-        task_goal: String,
-        failure: TaskFailure,
-    },
+    FailedFast { task_goal: String, failure: TaskFailure },
 
     /// Request degraded retry (to be handled by parent).
-    RequestDegradedRetry {
-        max_retries: u32,
-        reduced_timeout_ms: Option<u64>,
-        task_goal: String,
-    },
+    RequestDegradedRetry { max_retries: u32, reduced_timeout_ms: Option<u64>, task_goal: String },
 }
 
 impl FallbackResult {
     /// Check if this result represents a successful outcome.
     #[must_use]
     pub fn is_success(&self) -> bool {
-        matches!(
-            self,
-            Self::UsedDefault { .. } | Self::SimplifiedSuccess { .. }
-        )
+        matches!(self, Self::UsedDefault { .. } | Self::SimplifiedSuccess { .. })
     }
 
     /// Extract the result value if available.
@@ -247,13 +217,10 @@ pub mod fallback_presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn create_test_task() -> SubtaskSpec {
-        SubtaskSpec {
-            goal: "Test task".to_string(),
-            input: Value::Null,
-            budget_steps: 5,
-        }
+        SubtaskSpec { goal: "Test task".to_string(), input: Value::Null, budget_steps: 5 }
     }
 
     #[tokio::test]
@@ -263,11 +230,19 @@ mod tests {
         let failure = TaskFailure::permanent("test error");
 
         let result = executor
-            .execute(&task, &failure, None::<fn() -> _>)
+            .execute(
+                &task,
+                &failure,
+                Option::<
+                    fn() -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = PortResult<Value>> + Send>,
+                    >,
+                >::None,
+            )
             .await;
 
         assert!(matches!(result, FallbackResult::Skipped { .. }));
-        assert!(result.is_success() == false);
+        assert!(!result.is_success());
     }
 
     #[tokio::test]
@@ -278,7 +253,15 @@ mod tests {
         let failure = TaskFailure::permanent("test error");
 
         let result = executor
-            .execute(&task, &failure, None::<fn() -> _>)
+            .execute(
+                &task,
+                &failure,
+                Option::<
+                    fn() -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = PortResult<Value>> + Send>,
+                    >,
+                >::None,
+            )
             .await;
 
         assert!(matches!(result, FallbackResult::UsedDefault { .. }));
@@ -310,7 +293,15 @@ mod tests {
         let failure = TaskFailure::permanent("test error");
 
         let result = executor
-            .execute(&task, &failure, None::<fn() -> _>)
+            .execute(
+                &task,
+                &failure,
+                Option::<
+                    fn() -> std::pin::Pin<
+                        Box<dyn std::future::Future<Output = PortResult<Value>> + Send>,
+                    >,
+                >::None,
+            )
             .await;
 
         assert!(matches!(result, FallbackResult::FailedFast { .. }));

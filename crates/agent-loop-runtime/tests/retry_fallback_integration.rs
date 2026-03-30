@@ -7,67 +7,82 @@ use serde_json::json;
 #[tokio::test]
 async fn test_retry_executor_success() {
     let executor = RetryExecutor::new(
-        RetryPolicy::default()
-            .with_max_retries(3)
-            .with_initial_delay(10)
-            .with_jitter(false),
+        RetryPolicy::default().with_max_retries(3).with_initial_delay(10).with_jitter(false),
     );
 
-    let mut attempts = 0;
+    let attempts = std::sync::Arc::new(std::sync::Mutex::new(0));
     let result = executor
-        .execute_simple(|| async {
-            attempts += 1;
-            if attempts < 2 {
-                Err("temporary error")
-            } else {
-                Ok("success")
+        .execute_simple({
+            let attempts = attempts.clone();
+            move || {
+                let attempts = attempts.clone();
+                async move {
+                    let mut guard = attempts.lock().expect("Failed to acquire lock");
+                    *guard += 1;
+                    if *guard < 2 {
+                        Err("temporary error")
+                    } else {
+                        Ok("success")
+                    }
+                }
             }
         })
         .await;
 
     assert!(result.is_ok());
-    assert_eq!(attempts, 2);
-    assert_eq!(result.unwrap(), "success");
+    assert_eq!(*attempts.lock().expect("Failed to acquire lock"), 2);
+    assert_eq!(result.expect("Result should be Ok"), "success");
 }
 
 #[tokio::test]
 async fn test_retry_executor_exhausts_retries() {
     let executor = RetryExecutor::new(
-        RetryPolicy::default()
-            .with_max_retries(2)
-            .with_initial_delay(10)
-            .with_jitter(false),
+        RetryPolicy::default().with_max_retries(2).with_initial_delay(10).with_jitter(false),
     );
 
-    let mut attempts = 0;
+    let attempts = std::sync::Arc::new(std::sync::Mutex::new(0));
     let result = executor
-        .execute_simple(|| async {
-            attempts += 1;
-            Err::<String, _>("persistent error")
+        .execute_simple({
+            let attempts = attempts.clone();
+            move || {
+                let attempts = attempts.clone();
+                async move {
+                    let mut guard = attempts.lock().expect("Failed to acquire lock");
+                    *guard += 1;
+                    Err::<String, _>("persistent error")
+                }
+            }
         })
         .await;
 
     assert!(result.is_err());
-    assert_eq!(attempts, 3); // Initial + 2 retries
+    assert_eq!(*attempts.lock().expect("Failed to acquire lock"), 2); // max_retries = 2 means 2 attempts
 }
 
 #[tokio::test]
 async fn test_retry_executor_permanent_error() {
     let executor = RetryExecutor::with_default_policy();
 
-    let mut attempts = 0;
+    let attempts = std::sync::Arc::new(std::sync::Mutex::new(0));
     let result = executor
         .execute(
-            || async {
-                attempts += 1;
-                Err::<String, _>("invalid request")
+            {
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        let mut guard = attempts.lock().expect("Failed to acquire lock");
+                        *guard += 1;
+                        Err::<String, _>("invalid request")
+                    }
+                }
             },
             |_| TaskFailure::permanent("invalid request"),
         )
         .await;
 
     assert!(result.is_err());
-    assert_eq!(attempts, 1); // No retries for permanent errors
+    assert_eq!(*attempts.lock().expect("Failed to acquire lock"), 1); // No retries for permanent errors
 }
 
 #[tokio::test]
@@ -81,7 +96,18 @@ async fn test_fallback_skip_and_continue() {
     let failure = TaskFailure::permanent("test error");
 
     let result = executor
-        .execute(&task, &failure, None::<fn() -> _>)
+        .execute(
+            &task,
+            &failure,
+            Option::<
+                fn() -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = agent_ports::PortResult<serde_json::Value>>
+                            + Send,
+                    >,
+                >,
+            >::None,
+        )
         .await;
 
     assert!(matches!(result, FallbackResult::Skipped { .. }));
@@ -100,7 +126,18 @@ async fn test_fallback_use_default() {
     let failure = TaskFailure::permanent("test error");
 
     let result = executor
-        .execute(&task, &failure, None::<fn() -> _>)
+        .execute(
+            &task,
+            &failure,
+            Option::<
+                fn() -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = agent_ports::PortResult<serde_json::Value>>
+                            + Send,
+                    >,
+                >,
+            >::None,
+        )
         .await;
 
     assert!(matches!(result, FallbackResult::UsedDefault { .. }));
@@ -140,7 +177,18 @@ async fn test_fallback_fail_fast() {
     let failure = TaskFailure::permanent("test error");
 
     let result = executor
-        .execute(&task, &failure, None::<fn() -> _>)
+        .execute(
+            &task,
+            &failure,
+            Option::<
+                fn() -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = agent_ports::PortResult<serde_json::Value>>
+                            + Send,
+                    >,
+                >,
+            >::None,
+        )
         .await;
 
     assert!(matches!(result, FallbackResult::FailedFast { .. }));
@@ -155,9 +203,7 @@ fn test_fallback_result_description() {
     };
     assert!(skipped.description().contains("Skipped"));
 
-    let default_result = FallbackResult::UsedDefault {
-        value: json!(null),
-        original_goal: "Test".to_string(),
-    };
+    let default_result =
+        FallbackResult::UsedDefault { value: json!(null), original_goal: "Test".to_string() };
     assert!(default_result.description().contains("default"));
 }
