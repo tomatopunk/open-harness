@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build run-gateway run-manage run-channel run-orchestrator dev create-local-fs smoke acceptance docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build dev create-local-fs smoke acceptance docker-up docker-down clean
 
 help:
 	@echo "open-harness common commands"
@@ -16,10 +16,6 @@ help:
 	@echo "  make build            - build workspace"
 	@echo "  make smoke            - run curl smoke script"
 	@echo "  make acceptance       - run acceptance script"
-	@echo "  make run-gateway      - run gateway service"
-	@echo "  make run-manage       - run manage service"
-	@echo "  make run-channel      - run channel service"
-	@echo "  make run-orchestrator - run orchestrator service"
 	@echo "  make docker-up        - docker compose up --build"
 	@echo "  make docker-down      - docker compose down"
 	@echo "  make clean            - clean cargo artifacts"
@@ -43,18 +39,6 @@ check: fmt-check lint test command-ir-guard
 build:
 	cargo build --workspace --all-targets
 
-run-gateway:
-	cargo run -p open-harness-gateway
-
-run-manage:
-	cargo run -p open-harness-manage
-
-run-channel:
-	cargo run -p open-harness-channel
-
-run-orchestrator:
-	cargo run -p open-harness-orchestrator
-
 smoke:
 	./scripts/smoke.sh
 
@@ -74,7 +58,7 @@ create-local-fs:
 dev: create-local-fs
 	cp config.dev.yaml config.yaml
 	cp extensions_config.example.json extensions_config.json
-	RUST_LOG=debug cargo run --example local-fs-dev
+	RUST_LOG=debug cargo run --bin open-harness-kernel
 
 clean:
 	cargo clean

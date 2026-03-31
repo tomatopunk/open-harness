@@ -1,5 +1,5 @@
-# Open Harness Configuration
-# 完整配置示例，包含所有可配置组件
+# Open Harness Development Configuration
+# 开发环境配置 - 使用 local_fs 存储模式
 
 log_level: debug
 
@@ -7,7 +7,7 @@ log_level: debug
 workspace_root: .
 plugins_dir: plugins
 
-# Storage 配置
+# Storage 配置 - 使用本地文件系统
 storage:
   mode: local_fs
   local_fs:
