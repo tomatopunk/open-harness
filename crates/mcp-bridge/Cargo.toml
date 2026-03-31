@@ -1,0 +1,20 @@
+[package]
+name = "mcp-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Enhanced MCP bridge for Open Harness - skill management and MCP server orchestration"
+
+[dependencies]
+# 工作区依赖
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+
+# 本地 crate 依赖（无）

@@ -1,0 +1,18 @@
+[package]
+name = "llm-providers"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "General LLM provider abstraction layer for Open Harness"
+
+[dependencies]
+# 工作区依赖
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# 本地 crate 依赖（无）
