@@ -1,5 +1,6 @@
 //! Tool registry, JSON-schema validation, timeouts.
 
+pub mod builtins;
 pub mod error;
 pub mod registry;
 pub mod schema;

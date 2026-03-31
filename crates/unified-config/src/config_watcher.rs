@@ -141,6 +141,7 @@ mod tests {
             tools: ToolRegistry::default(),
             subagents: SubagentConfig::default(),
             policies: PolicySwitches::default(),
+            acp_agents: crate::ACPAgentsConfig::default(),
         }
     }
 

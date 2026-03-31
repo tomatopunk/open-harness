@@ -68,6 +68,8 @@ impl Tool for EchoTool {
 /// Build default registry with echo + optional extra tools.
 #[must_use]
 pub fn default_echo_manifests() -> Vec<ToolManifest> {
+    use agent_ports::ToolProviderType;
+
     vec![ToolManifest {
         name: "echo".into(),
         description: Some("Echo JSON args".into()),
@@ -77,5 +79,9 @@ pub fn default_echo_manifests() -> Vec<ToolManifest> {
         timeout_ms: 30_000,
         retry_max: 0,
         side_effect_class: SideEffectClass::None,
+        provider_type: ToolProviderType::Local,
+        provider_name: "builtin".into(),
+        load_path: None,
+        version: Some("1.0.0".into()),
     }]
 }

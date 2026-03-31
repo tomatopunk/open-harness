@@ -9,9 +9,9 @@ pub fn parse_skill_file(path: &std::path::Path, category: &str) -> SkillResult<S
 
     // 解析 YAML frontmatter
     let (frontmatter, _content_body) =
-        extract_frontmatter(&content).map_err(|e| SkillError::InvalidFormat(e))?;
+        extract_frontmatter(&content).map_err(SkillError::InvalidFormat)?;
 
-    let manifest: SkillManifest = serde_yaml::from_str(&frontmatter)
+    let manifest: SkillManifest = serde_yaml::from_str(frontmatter)
         .map_err(|e| SkillError::ParseError(format!("Failed to parse YAML: {}", e)))?;
 
     let skill_dir = path
@@ -79,7 +79,7 @@ license: MIT
 This is the content.
 "#;
 
-        let (frontmatter, body) = extract_frontmatter(content).unwrap();
+        let (frontmatter, body) = extract_frontmatter(content).expect("Should extract frontmatter");
         assert_eq!(frontmatter.trim(), "name: Test Skill\ndescription: A test skill\nlicense: MIT");
         assert_eq!(body.trim(), "# Skill Content\nThis is the content.");
     }

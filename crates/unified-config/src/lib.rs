@@ -33,6 +33,10 @@ pub struct UnifiedConfig {
     /// Policy switches and governance rules
     #[serde(default)]
     pub policies: PolicySwitches,
+
+    /// ACP agent configurations
+    #[serde(default)]
+    pub acp_agents: ACPAgentsConfig,
 }
 
 /// Model registry containing all available LLM models.
@@ -330,6 +334,63 @@ impl Default for PolicySwitches {
     }
 }
 
+/// ACP (Agent Client Protocol) agents configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ACPAgentsConfig {
+    /// Map of agent name to configuration
+    #[serde(default, flatten)]
+    pub agents: std::collections::HashMap<String, ACPAgentConfig>,
+}
+
+impl ACPAgentsConfig {
+    /// Get a specific agent configuration by name
+    pub fn get_agent(&self, name: &str) -> Option<&ACPAgentConfig> {
+        self.agents.get(name)
+    }
+
+    /// Check if an agent exists
+    pub fn has_agent(&self, name: &str) -> bool {
+        self.agents.contains_key(name)
+    }
+
+    /// Get all agent names
+    pub fn agent_names(&self) -> Vec<&str> {
+        self.agents.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+/// Configuration for a single ACP-compatible agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ACPAgentConfig {
+    /// Command to launch the ACP agent subprocess
+    pub command: String,
+
+    /// Additional command arguments
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Description of the agent's capabilities (shown in tool description)
+    pub description: String,
+
+    /// Model hint passed to the agent (optional)
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// When true, automatically approve all ACP permission requests
+    /// (allow_once preferred over allow_always). When false (default),
+    /// all permission requests are denied.
+    #[serde(default)]
+    pub auto_approve_permissions: bool,
+
+    /// Timeout in milliseconds for agent execution (default: 300000ms = 5min)
+    #[serde(default = "default_acp_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_acp_timeout() -> u64 {
+    300_000 // 5 minutes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +447,22 @@ mod tests {
 
         assert_eq!(deserialized.name, "echo");
         assert_eq!(deserialized.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_acp_agent_config() {
+        let config = ACPAgentConfig {
+            command: "codex-acp".to_string(),
+            args: vec!["--model".to_string(), "gpt-4".to_string()],
+            description: "Codex ACP agent".to_string(),
+            model: Some("gpt-4".to_string()),
+            auto_approve_permissions: true,
+            timeout_ms: 300_000,
+        };
+
+        assert_eq!(config.command, "codex-acp");
+        assert!(config.auto_approve_permissions);
+        assert_eq!(config.model, Some("gpt-4".to_string()));
+        assert_eq!(config.timeout_ms, 300_000);
     }
 }

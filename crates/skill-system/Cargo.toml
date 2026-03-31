@@ -12,8 +12,12 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
-zip = "0.6"
+zip = { version = "0.6", features = ["deflate"] }
 agent-ports = { path = "../agent-ports" }
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -63,6 +63,12 @@ pub enum SkillError {
     #[error("Failed to install skill: {0}")]
     InstallError(String),
 
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+
+    #[error("Security error: {0}")]
+    SecurityError(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }

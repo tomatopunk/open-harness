@@ -1,9 +1,8 @@
 //! Tool Assembly Middleware - dynamically assembles available tools for each turn
 
-use crate::budget::RunBudget;
 use crate::error::AgentLoopResult;
 use crate::middleware::{AgentLoopMiddleware, TurnContext};
-use agent_ports::{LlmTurnOutput, ThreadId, ThreadState, ToolAssemblyPolicy, ToolManifest};
+use agent_ports::{ThreadState, ToolAssemblyPolicy, ToolManifest};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -29,7 +28,7 @@ impl ToolAssemblyMiddleware {
 impl AgentLoopMiddleware for ToolAssemblyMiddleware {
     async fn before_model(
         &self,
-        ctx: &TurnContext,
+        _ctx: &TurnContext,
         _state: &mut ThreadState,
         _messages_for_llm: &mut Vec<Value>,
     ) -> AgentLoopResult<()> {

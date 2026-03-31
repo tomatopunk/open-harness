@@ -1,7 +1,4 @@
-use agent_ports::{
-    HealthStatus, PortError, PortResult, ToolManifest, ToolProvider,
-    ToolProviderType as AgentToolProviderType,
-};
+use agent_ports::{HealthStatus, PortError, PortResult, ToolManifest, ToolProvider};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -11,15 +8,11 @@ use tracing::{debug, error, info};
 /// 工具提供者发现引擎
 pub struct ToolProviderDiscovery {
     providers: RwLock<HashMap<String, Arc<dyn ToolProvider>>>,
-    governance_root: Option<String>,
 }
 
 impl ToolProviderDiscovery {
-    pub fn new(governance_root: Option<&Path>) -> Self {
-        Self {
-            providers: RwLock::new(HashMap::new()),
-            governance_root: governance_root.map(|p| p.to_string_lossy().to_string()),
-        }
+    pub fn new(_governance_root: Option<&Path>) -> Self {
+        Self { providers: RwLock::new(HashMap::new()) }
     }
 
     /// 添加提供者
@@ -120,9 +113,13 @@ pub async fn load_mcp_providers(
         return Ok(());
     }
 
-    let configs = load_mcp_servers_from_file(mcp_config_path.to_str().unwrap())
-        .await
-        .map_err(|e| PortError::Tool(format!("Failed to load MCP config: {}", e)))?;
+    let configs = load_mcp_servers_from_file(
+        mcp_config_path
+            .to_str()
+            .ok_or_else(|| PortError::Tool("MCP config path is not valid UTF-8".to_string()))?,
+    )
+    .await
+    .map_err(|e| PortError::Tool(format!("Failed to load MCP config: {}", e)))?;
 
     let enabled_configs: Vec<_> = configs.into_iter().filter(|c| c.enabled).collect();
 

@@ -2,7 +2,7 @@
 name = "tool-providers"
 version = "0.1.0"
 edition = "2021"
-description = "Tool providers for Harness - MCP, Skills, Local, and Community tools"
+description = "Tool providers for Harness - MCP, Skills, Local, ACP agents, and Community tools"
 
 [dependencies]
 async-trait = { workspace = true }
@@ -16,6 +16,7 @@ agent-ports = { path = "../agent-ports" }
 mcp-client = { path = "../mcp-client" }
 skill-system = { path = "../skill-system" }
 tool-runtime = { path = "../tool-runtime" }
+unified-config = { path = "../unified-config" }
 
 [lints]
 workspace = true

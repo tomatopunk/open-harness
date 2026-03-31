@@ -232,7 +232,7 @@ impl McpClient {
 
         // 合并所有 content
         let merged = if result.content.len() == 1 {
-            result.content.into_iter().next().unwrap()
+            result.content.into_iter().next().expect("Content should have one element")
         } else {
             json!(result.content)
         };

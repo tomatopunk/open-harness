@@ -40,16 +40,23 @@ impl McpToolsCache {
             if let Some(path) = &self.config_path {
                 if let Ok(meta) = fs::metadata(path).await {
                     if let Ok(modified) = meta.modified() {
-                        *self.config_mtime.write().await =
-                            Some(modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+                        *self.config_mtime.write().await = Some(
+                            modified
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .expect("Time should be valid")
+                                .as_secs(),
+                        );
                     }
                 }
             }
 
-            tracing::info!("Loaded {} MCP tools", cache_guard.as_ref().unwrap().len());
+            tracing::info!(
+                "Loaded {} MCP tools",
+                cache_guard.as_ref().expect("Cache should be set").len()
+            );
         }
 
-        Ok(cache_guard.as_ref().unwrap().clone())
+        Ok(cache_guard.as_ref().expect("Cache should be set").clone())
     }
 
     /// 重置缓存

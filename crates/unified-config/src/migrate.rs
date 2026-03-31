@@ -212,7 +212,6 @@ impl ComparisonResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_validate_config_success() {
@@ -230,6 +229,7 @@ mod tests {
             tools: crate::ToolRegistry::default(),
             subagents: crate::SubagentConfig::default(),
             policies: crate::PolicySwitches::default(),
+            acp_agents: crate::ACPAgentsConfig::default(),
         };
 
         let result = validate_config(&config);

@@ -53,7 +53,10 @@ pub fn load_unified_config(
     // Load subagents from governance/subagents.yaml
     let subagents = load_governance_subagents(governance_root)?;
 
-    Ok(UnifiedConfig { models: merged_models, tools, subagents, policies })
+    // Load ACP agents from governance/acp_agents.yaml
+    let acp_agents = load_governance_acp_agents(governance_root)?;
+
+    Ok(UnifiedConfig { models: merged_models, tools, subagents, policies, acp_agents })
 }
 
 /// Reference to AppConfig fields needed for loading.
@@ -374,6 +377,28 @@ pub fn merge_skills_into_policies(
     policies
 }
 
+/// Load ACP agent configurations from governance/acp_agents.yaml.
+fn load_governance_acp_agents(
+    governance_root: &str,
+) -> Result<crate::ACPAgentsConfig, ConfigLoaderError> {
+    use std::collections::HashMap;
+
+    let path = Path::new(governance_root).join("acp_agents.yaml");
+    if !path.exists() {
+        return Ok(crate::ACPAgentsConfig::default());
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+
+    // Parse as a map directly
+    let agents: HashMap<String, crate::ACPAgentConfig> =
+        serde_yaml::from_str(&content).map_err(|e| {
+            ConfigLoaderError::InvalidConfig(format!("Failed to parse ACP agents: {}", e))
+        })?;
+
+    Ok(crate::ACPAgentsConfig { agents })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +488,36 @@ max_tasks_per_run: 8
         let result = load_governance_subagents(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(result.max_concurrent, 4);
         assert_eq!(result.max_tasks_per_run, 8);
+    }
+
+    #[test]
+    fn test_load_governance_acp_agents() {
+        let dir = tempdir().unwrap();
+        let acp_path = dir.path().join("acp_agents.yaml");
+        std::fs::write(
+            &acp_path,
+            r#"
+codex:
+  command: codex-acp
+  args: ["--model", "gpt-4"]
+  description: Codex ACP agent for code generation
+  model: gpt-4
+  auto_approve_permissions: true
+test_agent:
+  command: test-agent
+  description: Test agent
+  auto_approve_permissions: false
+"#,
+        )
+        .unwrap();
+
+        let result = load_governance_acp_agents(dir.path().to_str().unwrap()).unwrap();
+        assert!(result.has_agent("codex"));
+        assert!(result.has_agent("test_agent"));
+
+        let codex = result.get_agent("codex").unwrap();
+        assert_eq!(codex.command, "codex-acp");
+        assert_eq!(codex.args, vec!["--model", "gpt-4"]);
+        assert!(codex.auto_approve_permissions);
     }
 }

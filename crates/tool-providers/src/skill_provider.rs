@@ -4,14 +4,11 @@ use agent_ports::{
 };
 use async_trait::async_trait;
 use skill_system::{Skill, SkillLoader};
-use std::sync::Arc;
 use std::time::Instant;
-use tracing::debug;
 
 /// Skill 工具提供者
 pub struct SkillToolProvider {
     skills: Vec<Skill>,
-    skills_root: String,
 }
 
 impl SkillToolProvider {
@@ -21,7 +18,7 @@ impl SkillToolProvider {
             .load_skills(true)
             .map_err(|e| PortError::Skill(format!("Failed to load skills: {}", e)))?;
 
-        Ok(Self { skills, skills_root })
+        Ok(Self { skills })
     }
 
     /// 获取启用的技能列表

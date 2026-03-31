@@ -1,23 +1,41 @@
 use crate::parser::parse_skill_file;
 use crate::types::{Skill, SkillError, SkillResult};
+use crate::validation::validate_skill_frontmatter;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
+/// Skill 加载统计
+#[derive(Debug, Clone, Default)]
+pub struct LoadStats {
+    pub total_directories: usize,
+    pub valid_skills: usize,
+    pub invalid_skills: usize,
+    pub skipped_skills: usize,
+}
+
 /// Skill 加载器
 pub struct SkillLoader {
     skills_root: PathBuf,
+    validate: bool,
 }
 
 impl SkillLoader {
     pub fn new(skills_root: PathBuf) -> Self {
-        Self { skills_root }
+        Self { skills_root, validate: true }
+    }
+
+    /// 设置是否启用验证
+    pub fn with_validation(mut self, validate: bool) -> Self {
+        self.validate = validate;
+        self
     }
 
     /// 加载所有技能
     pub fn load_skills(&self, enabled_only: bool) -> SkillResult<Vec<Skill>> {
         let mut skills = Vec::new();
+        let mut stats = LoadStats::default();
 
         // 扫描 public 和 custom 目录
         for category in ["public", "custom"] {
@@ -27,7 +45,7 @@ impl SkillLoader {
                 continue;
             }
 
-            self.walk_skills_dir(&category_path, category, &mut skills)?;
+            self.walk_skills_dir(&category_path, category, &mut skills, &mut stats)?;
         }
 
         // 加载 enabled 状态
@@ -35,10 +53,23 @@ impl SkillLoader {
 
         if enabled_only {
             let count = skills.iter().filter(|s| s.enabled).count();
-            info!("Loaded {} enabled skills out of {} total", count, skills.len());
+            info!(
+                "Loaded {} enabled skills out of {} total (valid: {}, invalid: {}, skipped: {})",
+                count,
+                skills.len(),
+                stats.valid_skills,
+                stats.invalid_skills,
+                stats.skipped_skills
+            );
             skills.retain(|s| s.enabled);
         } else {
-            info!("Loaded {} skills", skills.len());
+            info!(
+                "Loaded {} skills (valid: {}, invalid: {}, skipped: {})",
+                skills.len(),
+                stats.valid_skills,
+                stats.invalid_skills,
+                stats.skipped_skills
+            );
         }
 
         skills.sort_by(|a, b| a.name.cmp(&b.name));
@@ -51,26 +82,53 @@ impl SkillLoader {
         dir: &Path,
         category: &str,
         skills: &mut Vec<Skill>,
+        stats: &mut LoadStats,
     ) -> SkillResult<()> {
         let entries = fs::read_dir(dir).map_err(|e| {
             SkillError::ReadError(format!("Failed to read {}: {}", dir.display(), e))
         })?;
 
+        stats.total_directories += 1;
+
         for entry in entries.flatten() {
             let path = entry.path();
 
-            if path.is_dir() && !path.file_name().unwrap().to_str().unwrap().starts_with('.') {
-                // 递归扫描子目录
-                self.walk_skills_dir(&path, category, skills)?;
-            } else if path.is_file() && path.file_name().unwrap() == "SKILL.md" {
-                // 解析 SKILL.md
-                match parse_skill_file(&path, category) {
-                    Ok(skill) => {
-                        debug!("Loaded skill: {} ({})", skill.name, category);
-                        skills.push(skill);
+            if path.is_dir() {
+                if let Some(file_name) = path.file_name() {
+                    if let Some(file_name_str) = file_name.to_str() {
+                        if !file_name_str.starts_with('.') {
+                            // 递归扫描子目录
+                            self.walk_skills_dir(&path, category, skills, stats)?;
+                        }
                     }
-                    Err(e) => {
-                        warn!("Failed to parse skill at {}: {}", path.display(), e);
+                }
+            } else if path.is_file() {
+                if let Some(file_name) = path.file_name() {
+                    if file_name == "SKILL.md" {
+                        // 验证技能目录（SKILL.md 所在的父目录）
+                        let skill_dir = path.parent().unwrap_or(dir);
+
+                        if self.validate {
+                            let (is_valid, message, _name) = validate_skill_frontmatter(skill_dir);
+                            if !is_valid {
+                                warn!("Invalid skill at {}: {}", skill_dir.display(), message);
+                                stats.invalid_skills += 1;
+                                continue;
+                            }
+                        }
+
+                        // 解析 SKILL.md
+                        match parse_skill_file(&path, category) {
+                            Ok(skill) => {
+                                debug!("Loaded skill: {} ({})", skill.name, category);
+                                skills.push(skill);
+                                stats.valid_skills += 1;
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse skill at {}: {}", path.display(), e);
+                                stats.invalid_skills += 1;
+                            }
+                        }
                     }
                 }
             }

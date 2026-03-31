@@ -2,7 +2,7 @@
 
 use crate::error::AgentLoopResult;
 use crate::middleware::{AgentLoopMiddleware, TurnContext};
-use agent_ports::{LlmTurnOutput, SkillContext, SkillPort, ThreadState};
+use agent_ports::{SkillContext, SkillPort, ThreadState};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;

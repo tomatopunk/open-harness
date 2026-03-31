@@ -3,7 +3,7 @@ use agent_ports::{
     ToolProvider, ToolProviderType, ToolResult, ToolResultMetadata,
 };
 use async_trait::async_trait;
-use mcp_client::{McpClient, McpTool as McpToolInfo, MultiServerMcpClient};
+use mcp_client::{McpTool as McpToolInfo, MultiServerMcpClient};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error};
@@ -56,7 +56,7 @@ impl ToolProvider for McpToolProvider {
             .await
             .map_err(|e| PortError::Tool(format!("Failed to get MCP tools: {}", e)))?;
 
-        let manifests =
+        let manifests: Vec<ToolManifest> =
             mcp_tools.into_iter().map(|t| mcp_tool_to_manifest(t, &self.server_name)).collect();
 
         debug!("Listed {} MCP tools", manifests.len());
@@ -88,10 +88,11 @@ impl ToolProvider for McpToolProvider {
     }
 
     async fn health_check(&self) -> PortResult<HealthStatus> {
+        // Convert mcp_client::HealthStatus to agent_ports::HealthStatus
         match self.client.health_check().await {
-            HealthStatus::Healthy => Ok(HealthStatus::Healthy),
-            HealthStatus::Unhealthy(e) => Ok(HealthStatus::Unhealthy(e)),
-            HealthStatus::Degraded(e) => Ok(HealthStatus::Degraded(e)),
+            mcp_client::HealthStatus::Healthy => Ok(HealthStatus::Healthy),
+            mcp_client::HealthStatus::Unhealthy(e) => Ok(HealthStatus::Unhealthy(e)),
+            mcp_client::HealthStatus::Degraded(e) => Ok(HealthStatus::Degraded(e)),
         }
     }
 }

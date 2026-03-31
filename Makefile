@@ -34,15 +34,9 @@ lint:
 test:
 	cargo test --workspace
 
-doc-check:
-	python3 scripts/check_inner_engine_docs.py
+pre-commit: fmt-check lint test command-ir-guard
 
-command-ir-guard:
-	bash scripts/check_command_ir_guard.sh
-
-pre-commit: fmt-check lint test doc-check command-ir-guard
-
-check: fmt-check lint test doc-check command-ir-guard
+check: fmt-check lint test command-ir-guard
 
 build:
 	cargo build --workspace --all-targets

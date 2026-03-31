@@ -135,6 +135,8 @@ mod tests {
     #[async_trait]
     impl agent_ports::ToolPort for DelayByCallIdTool {
         fn manifests(&self) -> Vec<ToolManifest> {
+            use agent_ports::ToolProviderType;
+
             vec![ToolManifest {
                 name: "echo".into(),
                 description: None,
@@ -144,6 +146,10 @@ mod tests {
                 timeout_ms: 5000,
                 retry_max: 0,
                 side_effect_class: agent_ports::SideEffectClass::None,
+                provider_type: ToolProviderType::Local,
+                provider_name: "test".into(),
+                load_path: None,
+                version: Some("1.0.0".into()),
             }]
         }
 

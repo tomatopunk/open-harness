@@ -5,6 +5,7 @@
 //! **`after_tool_call`** (together: `around_tool_call` semantics).
 
 pub mod builder;
+pub mod clarification;
 pub mod skill_injection;
 pub mod tool_assembly;
 
