@@ -1,0 +1,8 @@
+name: gateway
+version: 0.1.0
+description: Open Harness Gateway Plugin - 提供 OpenAI 兼容的 API
+authors:
+  - Open Harness Team
+type: api
+enabled: true
+dependencies: []
