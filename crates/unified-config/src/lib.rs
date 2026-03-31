@@ -7,10 +7,12 @@
 //! - Policy switches and governance rules
 
 pub mod config_watcher;
+pub mod extensions_config;
 pub mod loader;
 pub mod migrate;
 
 pub use config_watcher::{ConfigManager, ConfigWatcher};
+pub use extensions_config::{ExtensionsConfig, McpServerConfig, SkillState};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

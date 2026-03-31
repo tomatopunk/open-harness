@@ -19,6 +19,48 @@ pub struct McpBridgeConfig {
     /// 服务器配置列表
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
+
+    /// Ecosystem registry configuration
+    #[serde(default)]
+    pub ecosystem: EcosystemConfig,
+}
+
+/// Ecosystem configuration for MCP servers
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EcosystemConfig {
+    /// Whether ecosystem integration is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Registry configurations (placeholder)
+    #[serde(default)]
+    pub registries: Vec<serde_json::Value>,
+    /// Package manager configuration
+    #[serde(default)]
+    pub package_manager: PackageManagerConfig,
+    /// Auto-install MCP servers on startup
+    #[serde(default)]
+    pub auto_install: bool,
+}
+
+/// Package manager configuration for ecosystem
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageManagerConfig {
+    /// Installation root for ecosystem packages
+    #[serde(default = "default_install_root")]
+    pub install_root: PathBuf,
+    /// Whether to enable sandboxing
+    #[serde(default)]
+    pub sandbox_enabled: bool,
+}
+
+impl Default for PackageManagerConfig {
+    fn default() -> Self {
+        Self { install_root: default_install_root(), sandbox_enabled: false }
+    }
+}
+
+fn default_install_root() -> PathBuf {
+    PathBuf::from(".ecosystem")
 }
 
 impl Default for McpBridgeConfig {
@@ -28,6 +70,7 @@ impl Default for McpBridgeConfig {
             skills_root: default_skills_root(),
             enable_skill_mcp: true,
             servers: Vec::new(),
+            ecosystem: EcosystemConfig::default(),
         }
     }
 }

@@ -1,25 +1,24 @@
 [package]
-name = "agent-kernel"
+name = "dingtalk-plugin"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "Open Harness DingTalk Channel Plugin"
+
+[lib]
 
 [dependencies]
 # 工作区依赖
 async-trait = { workspace = true }
-futures = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-figment = { workspace = true }
-uuid = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
 
 # 本地 crate 依赖
-plugin-system = { path = "../plugin-system" }
-llm-providers = { path = "../llm-providers" }
-mcp-bridge = { path = "../mcp-bridge" }
-state-abstraction = { path = "../state-abstraction" }
+plugin-system = { path = "../../crates/plugin-system" }
+agent-kernel = { path = "../../crates/agent-kernel" }

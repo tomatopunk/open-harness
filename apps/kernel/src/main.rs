@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Workspace root: {:?}", kernel_config.workspace_root);
     info!("Plugins directory: {:?}", kernel_config.plugins_dir);
-    info!("Dev mode: {}", kernel_config.dev_mode);
+    info!("Log level: {}", kernel_config.log_level);
 
     // 创建 kernel
     let kernel = AgentKernel::new(kernel_config.clone());

@@ -6,8 +6,14 @@ members = [
     "crates/plugin-system",
     "crates/llm-providers",
     "crates/mcp-bridge",
+    "crates/unified-config",
+    "crates/agent-ports",
+    "crates/state-abstraction",
+    "crates/ecosystem-registry",
+    "crates/package-manager",
     "plugins/gateway-plugin",
     "plugins/manage-plugin",
+    "plugins/dingtalk-plugin",
 ]
 
 [workspace.package]
@@ -35,6 +41,9 @@ parking_lot = "0.12"
 figment = { version = "0.10", features = ["yaml", "env"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "8", features = ["axum"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+regex = "1.10"
+semver = "1.0"
 
 
 [workspace.lints.rust]

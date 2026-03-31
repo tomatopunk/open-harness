@@ -1,3 +1,9 @@
+# Open Harness Configuration
+# 完整配置示例，包含所有可配置组件
+
+log_level: debug
+
+# Storage 配置
 storage:
   mode: local_fs
   local_fs:
@@ -15,6 +21,40 @@ storage:
     region: null
     endpoint: null
 
+# Agent Loop 配置
+agent_loop:
+  enabled: true
+  max_iterations: 100
+  completion_promise: "DONE"
+  debounce_seconds: 30
+
+# Memory 系统配置
+memory:
+  enabled: true
+  storage_path: memory/memory.json
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+
+# Channels 配置
+channels:
+  enabled:
+    - dingtalk
+    - wecom
+  bind: 0.0.0.0:8082
+  dingtalk:
+    enabled: true
+    webhook_url: $DINGTALK_WEBHOOK_URL
+    app_secret: $DINGTALK_APP_SECRET
+  wecom:
+    enabled: false
+    webhook_url: $WECOM_WEBHOOK_URL
+
+# Extensions 配置路径（MCP servers and skills）
+extensions_config_path: ./extensions_config.json
+
+# Models 配置
 models:
   - name: gpt-4
     display_name: GPT-4
@@ -39,6 +79,7 @@ models:
     use_responses_api: true
     output_version: responses/v1
 
+# Gateway 配置
 gateway:
   bind: 0.0.0.0:8080
   langgraph_upstream: http://127.0.0.1:2024
@@ -49,6 +90,7 @@ gateway:
     api_keys: []
     bearer_tokens: []
 
+# Manage 配置
 manage:
   bind: 0.0.0.0:8081
   langgraph_url: http://127.0.0.1:2024
@@ -61,14 +103,7 @@ manage:
     bearer_tokens: []
   webhook_secret: null
 
-channels:
-  enabled:
-    - dingtalk
-    - wecom
-  # Optional outbound webhook env vars:
-  # DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=...
-  # WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
-
+# Runtime 配置
 runtime:
   engine: inner
   governance_root: governance

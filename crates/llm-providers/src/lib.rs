@@ -13,4 +13,4 @@ pub mod rig;
 pub use config::{ProviderConfig, ProviderType};
 pub use error::{ProviderError, ProviderResult};
 pub use message::{Message, Role};
-pub use traits::{ChatAgent, CompletionClient, LLMProvider};
+pub use traits::{create_provider, ChatAgent, CompletionClient, LLMProvider};

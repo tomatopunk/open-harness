@@ -1,8 +1,10 @@
-.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build run-gateway run-manage run-channel run-orchestrator smoke acceptance docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build run-gateway run-manage run-channel run-orchestrator dev create-local-fs smoke acceptance docker-up docker-down clean
 
 help:
 	@echo "open-harness common commands"
 	@echo ""
+	@echo "  make dev              - start development mode with local_fs storage (config.dev.yaml)"
+	@echo "  make create-local-fs  - create local_fs directory structure for development"
 	@echo "  make fmt              - format all Rust code"
 	@echo "  make fmt-check        - check formatting only"
 	@echo "  make pre-commit       - required checks before commit (fmt-check + lint + test + doc-check + command-ir-guard)"
@@ -64,6 +66,15 @@ docker-up:
 
 docker-down:
 	docker compose -f deploy/docker/docker-compose.yml down
+
+create-local-fs:
+	@mkdir -p .deer-flow/local-fs/{config,tasks,threads,uploads,artifacts,memory,skills}
+	@echo "Created local_fs directory structure at .deer-flow/local-fs/"
+
+dev: create-local-fs
+	cp config.dev.yaml config.yaml
+	cp extensions_config.example.json extensions_config.json
+	RUST_LOG=debug cargo run --example local-fs-dev
 
 clean:
 	cargo clean

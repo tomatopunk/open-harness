@@ -129,7 +129,36 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 #[async_trait]
-pub trait MemoryStore: Send + Sync {
+impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
+    async fn load_memory_document(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::memory_document::MemoryDocument, StateError> {
+        (**self).load_memory_document(thread_id).await
+    }
+    async fn save_memory_document(
+        &self,
+        thread_id: Uuid,
+        doc: &crate::memory_document::MemoryDocument,
+    ) -> Result<(), StateError> {
+        (**self).save_memory_document(thread_id, doc).await
+    }
+
+    async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
+        (**self).append_fact(thread_id, fact).await
+    }
+
+    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
+        (**self).list_facts(thread_id).await
+    }
+
+    async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError> {
+        (**self).list_thread_ids_with_memory().await
+    }
+}
+
+#[async_trait]
+pub trait MemoryStore: Send + Sync + 'static {
     /// Full structured memory (see [`crate::memory_document::MemoryDocument`]). Missing thread → empty document.
     async fn load_memory_document(
         &self,
