@@ -7,10 +7,14 @@ use std::collections::HashMap;
 pub enum ProviderType {
     #[default]
     Rig,
+    #[serde(rename = "open_ai")]
     OpenAI,
     Anthropic,
+    #[serde(rename = "azure")]
     Azure,
+    #[serde(rename = "google")]
     Google,
+    #[serde(rename = "bedrock")]
     Bedrock,
 }
 
