@@ -9,7 +9,7 @@ plugins_dir: plugins
 
 # Storage 配置
 storage:
-  mode: local_fs
+  mode: localfs
   local_fs:
     root: .deer-flow/local-fs
   sqlite:
@@ -49,6 +49,7 @@ extensions_config_path: ./extensions_config.json
 
 # LLM 配置 (for rig-rs provider)
 llm:
+  provider_type: rig
   model: gpt-4
   api_key: $OPENAI_API_KEY
   base_url: https://api.openai.com/v1

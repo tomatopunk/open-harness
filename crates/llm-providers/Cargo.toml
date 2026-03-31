@@ -14,5 +14,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
 
-# 本地 crate 依赖（无）
+# OpenAI 流式响应解析
+eventsource-stream = "0.3"
