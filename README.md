@@ -1,131 +1,99 @@
-# open-harness
+# Open Harness
 
-Rust implementation of the **open-harness** control/data plane aligned with [deer-flow](https://github.com/bytedance/deer-flow): LangGraph-compatible gateway, manage API, orchestrator, IM channels, and pluggable storage.
+> 一个真正开放的 agent 内核架构，参考 oh-my-openagent 的插件化设计和 rig 库的成熟生态系统。
 
-The runtime follows a storage-first design: `memory`, `skills`, `tool records`, `sandbox execution logs`, `sub-agent tasks`, thread uploads, manage UI config (agents/channels/models), and thread lifecycle (cascade delete) go through the same `StorageRegistry` / `build_runtime_storage` path for the active `storage.mode`.
+## 核心特性
 
-## Layout
+- **最小化内核** - 只保留 agent 循环、事件总线、插件管理
+- **一切皆插件** - 模型、工具、渠道、存储都作为插件加载
+- **MCP 优先** - 所有外部能力通过 MCP 提供
+- **通用 LLM 抽象** - 不绑定任何特定库，支持多种 provider（rig、OpenAI、Anthropic 等）
+- **插件化设计** - 参考 oh-my-openagent 的工厂模式和钩子系统
+- **Claude 理念** - 最小化核心，最大化扩展能力
 
-- `apps/`: runtime services (`gateway`, `manage`, `channel`, `orchestrator`)
-- `crates/`: reusable domain/runtime/storage crates
-- `deploy/docker/`: Dockerfiles and compose for local multi-service run
-- `scripts/`: smoke and developer helper scripts
+## 目录结构
 
-## Build
+```
+open-harness/
+├── apps/
+│   └── kernel/              # 核心 kernel 二进制
+├── crates/
+│   ├── agent-kernel/        # 最小化 agent 内核
+│   ├── plugin-system/       # 插件系统
+│   ├── llm-providers/       # 通用 LLM provider 抽象
+│   ├── mcp-bridge/          # 增强的 MCP 桥接
+│   ├── agent-ports/         # 端口抽象（保留用于兼容性）
+│   ├── state-abstraction/   # 状态抽象（保留用于兼容性）
+│   └── mcp-client/          # MCP 客户端（保留用于兼容性）
+└── plugins/                  # 插件目录
+    ├── gateway-plugin/       # API 网关插件（OpenAI 兼容 API）
+    └── manage-plugin/        # 管理插件
+```
+
+## 快速开始
 
 ```bash
-cargo build --workspace --release
+# 构建
+cargo build --workspace
+
+# 运行 kernel
+cargo run -p open-harness-kernel
+
+# 运行测试
 cargo test --workspace
+
+# 运行 lint
 cargo clippy --workspace -- -D warnings
 ```
 
-## Configuration
+## 核心设计原则
 
-Default startup reads `config.yaml` (auto-generated if missing). Environment variables with prefix `OPEN_HARNESS_` override YAML fields.
+1. **最小化内核** - 只保留 agent 循环、事件总线、插件管理
+2. **一切皆插件** - 模型、工具、渠道、存储都作为插件加载
+3. **MCP 优先** - 所有外部能力通过 MCP 提供
+4. **配置驱动** - 参考 oh-my-openagent 的分层配置系统
+5. **钩子系统** - 生命周期钩子支持扩展
+6. **LLM 抽象** - 通用的 LLM provider 层，rig 只是其中一个实现
 
-Useful config files:
+## 插件开发
 
-- `config.example.yaml`: model/storage template
-- `config.yaml`: active runtime config
+### 创建一个插件
 
-Storage modes:
+1. 在 `plugins/` 目录创建插件目录
+2. 创建 `plugin.yaml` 清单
+3. 实现 `Plugin` trait
 
-- `local_fs` (dev default)
-- `sqlite`
-- `postgres`
-- `redis`
-- `s3`
+### 插件清单示例 (`plugin.yaml`)
 
-Operational keyspace / backup units: `docs/ops-storage-modes.md`. Cascade delete semantics: `docs/adr/001-thread-delete-cascade-consistency.md`.
-
-Storage-related keys in `storage`:
-
-- `mode`: `local_fs|sqlite|postgres|redis|s3`
-- `local_fs.root`
-- `sqlite.url`
-- `postgres.url`
-- `redis.url`
-- `redis.password`
-- `s3.bucket`
-- `s3.prefix`
-- `s3.region` (optional)
-- `s3.endpoint` (optional, for S3-compatible storage)
-
-Env overrides (nested with `__`):
-
-- `OPEN_HARNESS_GATEWAY__BIND` — default `0.0.0.0:8080`
-- `OPEN_HARNESS_GATEWAY__LANGGRAPH_UPSTREAM` — LangGraph server base URL (default `http://127.0.0.1:2024`)
-- `OPEN_HARNESS_MANAGE__BIND` — default `0.0.0.0:8081`
-- `OPEN_HARNESS_MANAGE__LANGGRAPH_URL` — used for remote thread `DELETE`
-- `OPEN_HARNESS_MANAGE__THREADS_ROOT` — **local workspace layout only** (default `.deer-flow/threads`): compatible with deer-flow style on-disk thread folders. It is **not** a second durable store: orchestrator/manage **must** persist thread state through `StorageRegistry` for the active `storage.mode`. Do not treat this path as an external storage API or leak it into HTTP contracts.
-- `OPEN_HARNESS_CHANNEL__GATEWAY_URL` — channel service callback target (default `http://127.0.0.1:8080`)
-- `OPEN_HARNESS_CHANNELS__ENABLED` — enabled IM channels list (defaults to `dingtalk,wecom` in config)
-- `OPEN_HARNESS_RUNTIME__ENGINE` — reserved; orchestrator **only** runs the inner model-tool-state loop (`agent-loop-runtime`)
-- `OPEN_HARNESS_RUNTIME__GOVERNANCE_ROOT` — directory with governance YAML (`models.yaml`, `tools.yaml`, `policies.yaml`, `subagents.yaml`)
-- `OPEN_HARNESS_CONFIG_PATH` — override config yaml path
-
-IM channel bootstrap:
-
-- `apps/channel` only depends on `channel-runtime` abstraction + `channel-bootstrap` assembly crate.
-- Built-in drivers currently include `dingtalk` and `wecom`, configured by `channels.enabled` in `config.yaml`.
-- `apps/manage` channel status list reads the same configured channel list (no hardcoded platform names).
-
-## API Contract
-
-- Frozen contract doc: `docs/API_CONTRACT.md`
-- Alignment scenarios: `docs/DEERFLOW_ALIGNMENT_SCENARIOS.md`
-- Release checklist: `docs/RELEASE_READINESS.md`
-- OpenAI compatibility:
-  - `GET /v1/models`
-  - `POST /v1/chat/completions` (supports `stream=true|false`)
-- DeerFlow-like manage APIs are exposed under `/api/*` from `open-harness-manage`.
-- Orchestrator persists runtime traces for memory/skills/tools/sandbox/sub-agents via `StorageRegistry`; manage uses the same registry for uploads, artifacts, and MCP/manage config (no ad-hoc thread directory writes for durable state).
-
-## Smoke (curl)
-
-With services running (see `scripts/smoke.sh`):
-
-```bash
-./scripts/smoke.sh
+```yaml
+name: my-plugin
+version: 0.1.0
+description: My awesome plugin
+authors:
+  - Your Name
+type: generic
+enabled: true
+dependencies: []
 ```
 
-## Docker Compose
+### 插件类型
 
-Set env vars:
+- `api` - API 服务插件
+- `tool` - 工具插件
+- `model` - 模型插件
+- `storage` - 存储插件
+- `channel` - 渠道插件
+- `generic` - 通用插件
 
-```bash
-cp .env.example .env
-# 必填：设置真实 LangGraph 上游地址（例如 http://host.docker.internal:2024）
-```
+## 关于"Open"
 
-Fast local profile (recommended for iteration):
+Open Harness 真正做到了"Open"：
 
-```bash
-docker compose --profile dev-fast -f deploy/docker/docker-compose.yml up --build
-```
+1. **开放架构** - 最小化内核，一切可扩展
+2. **开放生态** - 支持多种 LLM provider（不只是 rig）
+3. **开放协议** - MCP 优先，标准协议
+4. **开放贡献** - 插件化设计，易于贡献
 
-Full stack profile (includes postgres/redis):
+## License
 
-```bash
-docker compose --profile full -f deploy/docker/docker-compose.yml up --build
-```
-
-This compose file runs backend stack for local iteration (without mock upstream):
-
-- `open-harness-gateway`
-- `open-harness-manage`
-- `open-harness-channel`
-- `open-harness-orchestrator`
-- `redis`, `postgres`
-
-Note: You must provide a real upstream via `OPEN_HARNESS_MODEL_URL`.
-
-Thread workspace persists in Docker volume:
-
-- `OPEN_HARNESS_MANAGE__THREADS_ROOT=/data/threads`
-
-After startup, run:
-
-```bash
-./scripts/smoke.sh
-```
+MIT
