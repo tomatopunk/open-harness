@@ -8,6 +8,7 @@ mod message;
 mod traits;
 
 // Provider implementations
+pub mod openai;
 pub mod rig;
 
 pub use config::{ProviderConfig, ProviderType};

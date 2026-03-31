@@ -63,9 +63,9 @@ pub fn create_provider(config: &ProviderConfig) -> ProviderResult<Box<dyn LLMPro
     match config.provider_type {
         crate::config::ProviderType::Rig => Ok(Box::new(crate::rig::RigProvider::new(config)?)),
 
-        crate::config::ProviderType::OpenAI => Err(ProviderError::UnsupportedProvider(
-            "OpenAI provider not implemented yet".to_string(),
-        )),
+        crate::config::ProviderType::OpenAI => {
+            Ok(Box::new(crate::openai::OpenAIProvider::new(config)?))
+        }
 
         _ => Err(ProviderError::UnsupportedProvider(format!(
             "Provider {:?} not available",

@@ -15,7 +15,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
-futures-util = { workspace = true }
 
 # OpenAI 流式响应解析
-eventsource-stream = "0.3"
+futures-util = "0.3"
+eventsource-stream = "0.2.3"
