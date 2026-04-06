@@ -1,4 +1,7 @@
-use agent_ports::{CheckpointRecord, RunId, StepSeq, ThreadId};
+use agent_ports::{
+    BashCommandRisk, CheckpointRecord, ExecutionPolicyAction, ProcessSandboxProfile, RunId,
+    StepSeq, ThreadId, ToolAdapterKind,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -82,12 +85,70 @@ pub struct SubagentTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxExecution {
     pub execution_id: Uuid,
+    pub session_id: Uuid,
     pub thread_id: Uuid,
-    pub command: String,
-    pub exit_code: i32,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub adapter_kind: ToolAdapterKind,
+    pub provider_name: String,
+    pub command: Option<String>,
+    pub policy_action: ExecutionPolicyAction,
+    pub policy_reason: String,
+    pub sandbox_profile: ProcessSandboxProfile,
+    pub classifier_risk: Option<BashCommandRisk>,
+    pub classifier_reason: Option<String>,
+    pub outcome: String,
+    pub success: bool,
+    pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl SandboxExecution {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        execution_id: Uuid,
+        session_id: Uuid,
+        thread_id: Uuid,
+        tool_call_id: String,
+        tool_name: String,
+        adapter_kind: ToolAdapterKind,
+        provider_name: String,
+        command: Option<String>,
+        policy_action: ExecutionPolicyAction,
+        policy_reason: String,
+        sandbox_profile: ProcessSandboxProfile,
+        classifier_risk: Option<BashCommandRisk>,
+        classifier_reason: Option<String>,
+        outcome: String,
+        success: bool,
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    ) -> Self {
+        Self {
+            execution_id,
+            session_id,
+            thread_id,
+            tool_call_id,
+            tool_name,
+            adapter_kind,
+            provider_name,
+            command,
+            policy_action,
+            policy_reason,
+            sandbox_profile,
+            classifier_risk,
+            classifier_reason,
+            outcome,
+            success,
+            exit_code,
+            stdout,
+            stderr,
+            created_at: Utc::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
