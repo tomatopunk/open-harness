@@ -17,6 +17,7 @@ pub mod memory_system;
 pub mod memory_voting;
 pub mod path_safety;
 pub mod registry;
+pub mod session_core;
 pub mod traits;
 
 pub use agent_ports::CheckpointRecord;
@@ -46,6 +47,10 @@ pub use memory_system::{FactExtractionResult, MemorySystem, MemorySystemError, M
 pub use memory_voting::{FactVote, MemoryVotingEngine, RankedFact, VoteResult};
 pub use path_safety::sanitize_thread_id;
 pub use registry::{StorageBackendKind, StorageRegistry};
+pub use session_core::{
+    CreateSessionRequest, ForkSessionRequest, SessionContext, SessionCore, SessionLifecycleState,
+    SessionPolicy, SessionRecord,
+};
 pub use traits::{
     ArtifactStore, CheckpointStore, ManageAppConfig, ManageConfigStore, ManageTaskRecord,
     ManageTaskStore, McpConfigStore, MemoryPersistence, MemoryStore, SandboxExecution,
