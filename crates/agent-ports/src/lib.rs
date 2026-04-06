@@ -17,6 +17,7 @@ pub mod ports;
 pub mod result_merger;
 pub mod schema;
 pub mod state_effect;
+pub mod streaming_runtime;
 pub mod task;
 pub mod task_decomposer;
 pub mod thread_state;
@@ -52,6 +53,10 @@ pub use schema::{
     AGENT_EVENT_SCHEMA_VERSION, CHECKPOINT_RECORD_SCHEMA_VERSION, THREAD_STATE_SCHEMA_VERSION,
 };
 pub use state_effect::{apply_state_effects, tool_round_from_calls, StateEffect};
+pub use streaming_runtime::{
+    StreamingToolAdapter, StreamingToolRuntime, ToolAdapterKind, ToolRuntimeChunkSink,
+    ToolRuntimeEvent, ToolRuntimeRequest, ToolStreamChunk,
+};
 pub use task::{TaskEnvelope, TaskKind};
 pub use task_decomposer::{
     DecompositionBudget, DecompositionStrategy, HybridConfig, LlmPlannerConfig, LlmTaskDecomposer,
