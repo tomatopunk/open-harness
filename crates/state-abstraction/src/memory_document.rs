@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bump when adding/removing top-level fields in [`MemoryDocument`].
-pub const MEMORY_DOCUMENT_SCHEMA_VERSION: u32 = 2;
+pub const MEMORY_DOCUMENT_SCHEMA_VERSION: u32 = 3;
 
 /// Fact categories for long-term memory classification (DeerFlow-inspired).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +60,8 @@ pub struct Fact {
     /// Optional: weight for voting (computed as confidence * recency * source_reliability).
     #[serde(default)]
     pub weight: Option<f32>,
+    #[serde(default)]
+    pub mandatory: bool,
 }
 
 impl Fact {
@@ -80,6 +82,7 @@ impl Fact {
             source_thread,
             updated_at: None,
             weight: None,
+            mandatory: false,
         }
     }
 
@@ -99,10 +102,234 @@ impl Fact {
         self.updated_at = Some(Utc::now());
     }
 
+    #[must_use]
+    pub fn with_mandatory(mut self, mandatory: bool) -> Self {
+        self.mandatory = mandatory;
+        self
+    }
+
+    #[must_use]
+    pub fn is_mandatory(&self) -> bool {
+        self.mandatory || matches!(self.category, FactCategory::Goal) || self.confidence >= 0.95
+    }
+
     /// Get the string representation of the category.
     #[must_use]
     pub fn category_str(&self) -> &'static str {
         self.category.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionLevel {
+    Summary,
+    Semantic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionTriggerKind {
+    TokenThreshold,
+    MilestoneSnapshot,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SparseVector {
+    #[serde(default)]
+    pub dimensions: Vec<String>,
+    #[serde(default)]
+    pub values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecentContextSegment {
+    #[serde(default)]
+    pub facts: Vec<Fact>,
+    #[serde(default)]
+    pub estimated_tokens: usize,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkingMemorySummary {
+    pub id: String,
+    pub summary: String,
+    #[serde(default)]
+    pub source_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub mandatory_fact_ids: Vec<String>,
+    pub trigger: CompressionTriggerKind,
+    #[serde(default)]
+    pub estimated_tokens: usize,
+    pub created_at: DateTime<Utc>,
+}
+
+impl WorkingMemorySummary {
+    #[must_use]
+    pub fn new(
+        summary: String,
+        source_facts: &[Fact],
+        trigger: CompressionTriggerKind,
+        estimated_tokens: usize,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            summary,
+            source_fact_ids: source_facts.iter().map(|fact| fact.id.clone()).collect(),
+            mandatory_fact_ids: source_facts
+                .iter()
+                .filter(|fact| fact.is_mandatory())
+                .map(|fact| fact.id.clone())
+                .collect(),
+            trigger,
+            estimated_tokens,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkingContextSegment {
+    #[serde(default)]
+    pub summaries: Vec<WorkingMemorySummary>,
+    #[serde(default)]
+    pub estimated_tokens: usize,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchivedMemory {
+    pub id: String,
+    pub summary: String,
+    #[serde(default)]
+    pub key_facts: Vec<Fact>,
+    #[serde(default)]
+    pub source_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub mandatory_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub semantic_terms: Vec<String>,
+    #[serde(default)]
+    pub vector: SparseVector,
+    pub trigger: CompressionTriggerKind,
+    #[serde(default)]
+    pub estimated_tokens: usize,
+    pub created_at: DateTime<Utc>,
+}
+
+impl ArchivedMemory {
+    #[must_use]
+    pub fn new(
+        summary: String,
+        key_facts: Vec<Fact>,
+        source_facts: &[Fact],
+        semantic_terms: Vec<String>,
+        vector: SparseVector,
+        trigger: CompressionTriggerKind,
+        estimated_tokens: usize,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            summary,
+            key_facts,
+            source_fact_ids: source_facts.iter().map(|fact| fact.id.clone()).collect(),
+            mandatory_fact_ids: source_facts
+                .iter()
+                .filter(|fact| fact.is_mandatory())
+                .map(|fact| fact.id.clone())
+                .collect(),
+            semantic_terms,
+            vector,
+            trigger,
+            estimated_tokens,
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ArchivedContextSegment {
+    #[serde(default)]
+    pub entries: Vec<ArchivedMemory>,
+    #[serde(default)]
+    pub estimated_tokens: usize,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompressionDecision {
+    pub id: String,
+    pub level: CompressionLevel,
+    pub trigger: CompressionTriggerKind,
+    #[serde(default)]
+    pub source_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub output_entry_ids: Vec<String>,
+    #[serde(default)]
+    pub mandatory_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub preserved_fact_ids: Vec<String>,
+    #[serde(default)]
+    pub token_count_before: usize,
+    #[serde(default)]
+    pub token_count_after: usize,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl CompressionDecision {
+    #[must_use]
+    pub fn new(
+        level: CompressionLevel,
+        trigger: CompressionTriggerKind,
+        source_fact_ids: Vec<String>,
+        output_entry_ids: Vec<String>,
+        mandatory_fact_ids: Vec<String>,
+        preserved_fact_ids: Vec<String>,
+        token_count_before: usize,
+        token_count_after: usize,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            level,
+            trigger,
+            source_fact_ids,
+            output_entry_ids,
+            mandatory_fact_ids,
+            preserved_fact_ids,
+            token_count_before,
+            token_count_after,
+            reason: reason.into(),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SegmentedContext {
+    #[serde(default)]
+    pub recent: RecentContextSegment,
+    #[serde(default)]
+    pub working: WorkingContextSegment,
+    #[serde(default)]
+    pub archived: ArchivedContextSegment,
+    #[serde(default)]
+    pub compression_log: Vec<CompressionDecision>,
+    #[serde(default)]
+    pub last_milestone_snapshot: usize,
+}
+
+impl SegmentedContext {
+    #[must_use]
+    pub fn has_any_content(&self) -> bool {
+        !self.recent.facts.is_empty()
+            || !self.working.summaries.is_empty()
+            || !self.archived.entries.is_empty()
     }
 }
 
@@ -155,6 +382,10 @@ pub struct MemoryMetadata {
     /// Number of merge operations performed.
     #[serde(default)]
     pub merge_count: u64,
+    #[serde(default)]
+    pub compression_count: u64,
+    #[serde(default)]
+    pub milestone_snapshots: u64,
 }
 
 /// structured memory: facts list plus optional JSON blobs for user profile and history.
@@ -168,6 +399,8 @@ pub struct MemoryDocument {
     #[serde(default)]
     pub history: MemoryHistory,
     #[serde(default)]
+    pub segmented_context: SegmentedContext,
+    #[serde(default)]
     pub metadata: MemoryMetadata,
 }
 
@@ -178,6 +411,7 @@ impl Default for MemoryDocument {
             facts: Vec::new(),
             user: MemoryUserProfile::default(),
             history: MemoryHistory::default(),
+            segmented_context: SegmentedContext::default(),
             metadata: MemoryMetadata::default(),
         }
     }
@@ -194,6 +428,7 @@ impl MemoryDocument {
             || self.history.recent_months.is_some()
             || self.history.earlier_context.is_some()
             || self.history.long_term_background.is_some()
+            || self.segmented_context.has_any_content()
     }
 
     /// Add a fact to the document.
@@ -236,6 +471,16 @@ impl MemoryDocument {
         }
     }
 
+    #[must_use]
+    pub fn mandatory_facts(&self) -> Vec<&Fact> {
+        self.facts.iter().filter(|fact| fact.is_mandatory()).collect()
+    }
+
+    #[must_use]
+    pub fn estimated_fact_tokens(&self) -> usize {
+        self.facts.iter().map(|fact| estimate_tokens(&fact.content)).sum()
+    }
+
     /// Prune facts to max_count, keeping highest weight facts.
     pub fn prune_to_max(&mut self, max_count: usize, half_life_days: f32, source_reliability: f32) {
         if self.facts.len() <= max_count {
@@ -259,6 +504,16 @@ impl MemoryDocument {
     }
 }
 
+#[must_use]
+pub fn estimate_tokens(text: &str) -> usize {
+    let chars = text.trim().chars().count();
+    if chars == 0 {
+        return 0;
+    }
+
+    std::cmp::max(1, chars.div_ceil(4))
+}
+
 /// Decode legacy `Vec<String>` JSON or current [`MemoryDocument`] JSON.
 pub fn decode_memory_json_str(raw: &str) -> Result<MemoryDocument, String> {
     let t = raw.trim();
@@ -278,6 +533,7 @@ pub fn decode_memory_json_str(raw: &str) -> Result<MemoryDocument, String> {
             facts: Vec::new(), // Legacy format has no structured facts
             user: MemoryUserProfile::default(),
             history: MemoryHistory::default(),
+            segmented_context: SegmentedContext::default(),
             metadata: MemoryMetadata::default(),
         });
     }
@@ -303,6 +559,7 @@ pub fn decode_memory_json_str(raw: &str) -> Result<MemoryDocument, String> {
             facts,
             user,
             history,
+            segmented_context: SegmentedContext::default(),
             metadata: MemoryMetadata::default(),
         });
     }
@@ -431,5 +688,46 @@ mod tests {
         assert_eq!(doc.facts[0].content, "用户喜欢 Rust");
         assert_eq!(doc.facts[0].category, FactCategory::Preference);
         assert_eq!(doc.user.work_context, Some("Software engineer".to_string()));
+    }
+
+    #[test]
+    fn test_mandatory_fact_defaults_and_inference() {
+        let explicit = Fact::new(
+            "Do not rotate production secrets automatically".to_string(),
+            FactCategory::Knowledge,
+            0.8,
+            "thread-1".to_string(),
+        )
+        .with_mandatory(true);
+        assert!(explicit.is_mandatory());
+
+        let goal = Fact::new(
+            "Ship the memory refactor this week".to_string(),
+            FactCategory::Goal,
+            0.7,
+            "thread-1".to_string(),
+        );
+        assert!(goal.is_mandatory());
+
+        let routine = Fact::new(
+            "Filler fact".to_string(),
+            FactCategory::Knowledge,
+            0.4,
+            "thread-1".to_string(),
+        );
+        assert!(!routine.is_mandatory());
+    }
+
+    #[test]
+    fn test_segmented_context_counts_as_memory_content() {
+        let mut doc = MemoryDocument::default();
+        doc.segmented_context.recent.facts.push(Fact::new(
+            "Recent context".to_string(),
+            FactCategory::Context,
+            0.8,
+            "thread-1".to_string(),
+        ));
+
+        assert!(doc.has_any_content());
     }
 }

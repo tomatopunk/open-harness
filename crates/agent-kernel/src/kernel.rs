@@ -377,6 +377,11 @@ impl AgentKernel {
             max_facts: self.config.memory.max_facts,
             fact_confidence_threshold: self.config.memory.fact_confidence_threshold,
             max_injection_tokens: self.config.memory.max_injection_tokens,
+            compression_token_threshold: self.config.memory.compression_token_threshold,
+            milestone_snapshot_interval: self.config.memory.milestone_snapshot_interval,
+            recent_fact_window: self.config.memory.recent_fact_window,
+            working_fact_window: self.config.memory.working_fact_window,
+            archived_retrieval_limit: self.config.memory.archived_retrieval_limit,
         };
         let storage_config = self.build_state_storage_config();
         let store = state_abstraction::create_memory_store(
@@ -742,6 +747,34 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+
+        fs::remove_dir_all(workspace_root).unwrap();
+    }
+
+    #[test]
+    fn test_build_memory_system_propagates_segmented_memory_config() {
+        let workspace_root = std::env::temp_dir().join("agent-kernel-memory-config");
+        fs::create_dir_all(&workspace_root).unwrap();
+
+        let mut config = KernelConfig {
+            workspace_root: workspace_root.clone(),
+            plugins_dir: workspace_root.join("plugins"),
+            ..Default::default()
+        };
+        config.memory.compression_token_threshold = 42;
+        config.memory.milestone_snapshot_interval = 7;
+        config.memory.recent_fact_window = 2;
+        config.memory.working_fact_window = 5;
+        config.memory.archived_retrieval_limit = 3;
+
+        let kernel = AgentKernel::new(config);
+        let memory_system = kernel.build_memory_system().unwrap();
+
+        assert_eq!(memory_system.config().compression_token_threshold, 42);
+        assert_eq!(memory_system.config().milestone_snapshot_interval, 7);
+        assert_eq!(memory_system.config().recent_fact_window, 2);
+        assert_eq!(memory_system.config().working_fact_window, 5);
+        assert_eq!(memory_system.config().archived_retrieval_limit, 3);
 
         fs::remove_dir_all(workspace_root).unwrap();
     }

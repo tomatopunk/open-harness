@@ -23,6 +23,21 @@ pub struct MemoryConfig {
     #[serde(default = "default_max_injection_tokens")]
     pub max_injection_tokens: usize,
 
+    #[serde(default = "default_compression_token_threshold")]
+    pub compression_token_threshold: usize,
+
+    #[serde(default = "default_milestone_snapshot_interval")]
+    pub milestone_snapshot_interval: usize,
+
+    #[serde(default = "default_recent_fact_window")]
+    pub recent_fact_window: usize,
+
+    #[serde(default = "default_working_fact_window")]
+    pub working_fact_window: usize,
+
+    #[serde(default = "default_archived_retrieval_limit")]
+    pub archived_retrieval_limit: usize,
+
     /// Voting configuration.
     #[serde(default)]
     pub voting: VotingConfig,
@@ -105,6 +120,21 @@ fn default_max_facts() -> usize {
 fn default_max_injection_tokens() -> usize {
     2000
 }
+fn default_compression_token_threshold() -> usize {
+    256
+}
+fn default_milestone_snapshot_interval() -> usize {
+    6
+}
+fn default_recent_fact_window() -> usize {
+    6
+}
+fn default_working_fact_window() -> usize {
+    12
+}
+fn default_archived_retrieval_limit() -> usize {
+    4
+}
 fn default_conflict_threshold() -> f32 {
     0.3
 }
@@ -163,6 +193,11 @@ impl Default for MemoryConfig {
             fact_confidence_threshold: default_confidence_threshold(),
             max_facts: default_max_facts(),
             max_injection_tokens: default_max_injection_tokens(),
+            compression_token_threshold: default_compression_token_threshold(),
+            milestone_snapshot_interval: default_milestone_snapshot_interval(),
+            recent_fact_window: default_recent_fact_window(),
+            working_fact_window: default_working_fact_window(),
+            archived_retrieval_limit: default_archived_retrieval_limit(),
             voting: VotingConfig {
                 conflict_threshold: default_conflict_threshold(),
                 half_life_days: default_half_life_days(),
@@ -224,6 +259,8 @@ mod tests {
         assert_eq!(config.debounce_seconds, 30);
         assert_eq!(config.fact_confidence_threshold, 0.7);
         assert_eq!(config.max_facts, 100);
+        assert_eq!(config.compression_token_threshold, 256);
+        assert_eq!(config.milestone_snapshot_interval, 6);
         assert!(!config.conflict_detection.negation_words.is_empty());
     }
 

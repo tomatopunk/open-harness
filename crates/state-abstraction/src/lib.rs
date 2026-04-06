@@ -31,19 +31,28 @@ pub use local_fs_store::LocalFsStateStore;
 pub use memory::config::MemoryConfig;
 pub use memory::prompts::{MEMORY_UPDATE_PROMPT, MERGE_PROFILE_PROMPT};
 pub use memory_atomic::AtomicMemoryStore;
-pub use memory_document::{MemoryDocument, MEMORY_DOCUMENT_SCHEMA_VERSION};
+pub use memory_document::{
+    estimate_tokens, ArchivedContextSegment, ArchivedMemory, CompressionDecision, CompressionLevel,
+    CompressionTriggerKind, Fact, MemoryDocument, RecentContextSegment, SegmentedContext,
+    SparseVector, WorkingContextSegment, WorkingMemorySummary, MEMORY_DOCUMENT_SCHEMA_VERSION,
+};
 pub use memory_extractor::{FactExtractor, MemoryUpdate, ProcessedUpdate};
 pub use memory_injection::{
-    format_complete_memory, inject_memory_to_prompt, MemoryInjectionConfig,
+    format_complete_memory, format_complete_memory_with_query, inject_memory_to_prompt,
+    inject_memory_to_prompt_with_query, MemoryInjectionConfig,
 };
 pub use memory_manager::{FactManager, FactStats};
 pub use memory_merge::{MemoryMergeEngine, MergeResult, UserProfile};
 pub use memory_prompt::{format_fact, format_facts, format_memory_for_prompt};
 pub use memory_retrieval::{
-    format_memory_for_injection, truncate_to_token_budget, SimpleTokenCounter, TokenCounter,
-    TruncationResult,
+    build_sparse_vector, extract_semantic_terms, format_memory_for_injection,
+    format_segmented_memory_for_injection, rank_archived_memories, retrieve_segmented_context,
+    truncate_to_token_budget, ArchivedMemoryMatch, SegmentedMemoryRetrieval, SimpleTokenCounter,
+    TokenCounter, TruncationResult,
 };
-pub use memory_system::{FactExtractionResult, MemorySystem, MemorySystemError, MemorySystemStats};
+pub use memory_system::{
+    FactExtractionResult, MemorySystem, MemorySystemConfig, MemorySystemError, MemorySystemStats,
+};
 pub use memory_voting::{FactVote, MemoryVotingEngine, RankedFact, VoteResult};
 pub use path_safety::sanitize_thread_id;
 pub use registry::{StorageBackendKind, StorageRegistry};

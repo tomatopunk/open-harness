@@ -117,6 +117,16 @@ pub struct MemoryConfig {
     /// 最大注入 tokens
     #[serde(default = "default_max_injection_tokens")]
     pub max_injection_tokens: usize,
+    #[serde(default = "default_compression_token_threshold")]
+    pub compression_token_threshold: usize,
+    #[serde(default = "default_milestone_snapshot_interval")]
+    pub milestone_snapshot_interval: usize,
+    #[serde(default = "default_recent_fact_window")]
+    pub recent_fact_window: usize,
+    #[serde(default = "default_working_fact_window")]
+    pub working_fact_window: usize,
+    #[serde(default = "default_archived_retrieval_limit")]
+    pub archived_retrieval_limit: usize,
 }
 
 impl Default for MemoryConfig {
@@ -128,6 +138,11 @@ impl Default for MemoryConfig {
             fact_confidence_threshold: default_fact_threshold(),
             injection_enabled: default_injection_enabled(),
             max_injection_tokens: default_max_injection_tokens(),
+            compression_token_threshold: default_compression_token_threshold(),
+            milestone_snapshot_interval: default_milestone_snapshot_interval(),
+            recent_fact_window: default_recent_fact_window(),
+            working_fact_window: default_working_fact_window(),
+            archived_retrieval_limit: default_archived_retrieval_limit(),
         }
     }
 }
@@ -143,6 +158,21 @@ fn default_injection_enabled() -> bool {
 }
 fn default_max_injection_tokens() -> usize {
     2000
+}
+fn default_compression_token_threshold() -> usize {
+    256
+}
+fn default_milestone_snapshot_interval() -> usize {
+    6
+}
+fn default_recent_fact_window() -> usize {
+    6
+}
+fn default_working_fact_window() -> usize {
+    12
+}
+fn default_archived_retrieval_limit() -> usize {
+    4
 }
 
 /// Channels 配置
