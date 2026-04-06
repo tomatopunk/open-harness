@@ -6,8 +6,20 @@ use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateErrorCategory {
+    Config,
+    Initialization,
+    Runtime,
+    ExternalConnection,
+}
+
 #[derive(Debug, Error)]
 pub enum StateError {
+    #[error("config: {0}")]
+    Config(String),
+    #[error("initialization: {0}")]
+    Initialization(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("conflict: {0}")]
@@ -17,6 +29,19 @@ pub enum StateError {
     /// Cascade delete did not reach [`crate::delete_thread_report::DeleteThreadStatus::Complete`].
     #[error("{0}")]
     LifecycleIncomplete(Box<crate::delete_thread_report::DeleteThreadReport>),
+}
+
+impl StateError {
+    pub fn category(&self) -> StateErrorCategory {
+        match self {
+            Self::Config(_) => StateErrorCategory::Config,
+            Self::Initialization(_) => StateErrorCategory::Initialization,
+            Self::NotFound(_) | Self::Conflict(_) | Self::LifecycleIncomplete(_) => {
+                StateErrorCategory::Runtime
+            }
+            Self::Backend(_) => StateErrorCategory::ExternalConnection,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +154,21 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 #[async_trait]
-impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
+pub trait MemoryPersistence: Send + Sync + 'static {
+    /// Full structured memory (see [`crate::memory_document::MemoryDocument`]). Missing thread → empty document.
+    async fn load_memory_document(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::memory_document::MemoryDocument, StateError>;
+    async fn save_memory_document(
+        &self,
+        thread_id: Uuid,
+        doc: &crate::memory_document::MemoryDocument,
+    ) -> Result<(), StateError>;
+}
+
+#[async_trait]
+impl<S: MemoryPersistence + ?Sized> MemoryPersistence for Box<S> {
     async fn load_memory_document(
         &self,
         thread_id: Uuid,
@@ -143,7 +182,28 @@ impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
     ) -> Result<(), StateError> {
         (**self).save_memory_document(thread_id, doc).await
     }
+}
 
+#[async_trait]
+impl<S: MemoryPersistence + ?Sized> MemoryPersistence for std::sync::Arc<S> {
+    async fn load_memory_document(
+        &self,
+        thread_id: Uuid,
+    ) -> Result<crate::memory_document::MemoryDocument, StateError> {
+        (**self).load_memory_document(thread_id).await
+    }
+
+    async fn save_memory_document(
+        &self,
+        thread_id: Uuid,
+        doc: &crate::memory_document::MemoryDocument,
+    ) -> Result<(), StateError> {
+        (**self).save_memory_document(thread_id, doc).await
+    }
+}
+
+#[async_trait]
+impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
     async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
         (**self).append_fact(thread_id, fact).await
     }
@@ -158,18 +218,7 @@ impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
 }
 
 #[async_trait]
-pub trait MemoryStore: Send + Sync + 'static {
-    /// Full structured memory (see [`crate::memory_document::MemoryDocument`]). Missing thread → empty document.
-    async fn load_memory_document(
-        &self,
-        thread_id: Uuid,
-    ) -> Result<crate::memory_document::MemoryDocument, StateError>;
-    async fn save_memory_document(
-        &self,
-        thread_id: Uuid,
-        doc: &crate::memory_document::MemoryDocument,
-    ) -> Result<(), StateError>;
-
+pub trait MemoryStore: MemoryPersistence {
     async fn append_fact(&self, thread_id: Uuid, fact: &str) -> Result<(), StateError> {
         let mut doc = self.load_memory_document(thread_id).await?;
         // Create a default fact with the provided content

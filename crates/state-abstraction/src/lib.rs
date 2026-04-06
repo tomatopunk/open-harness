@@ -42,16 +42,16 @@ pub use memory_retrieval::{
     format_memory_for_injection, truncate_to_token_budget, SimpleTokenCounter, TokenCounter,
     TruncationResult,
 };
-pub use memory_system::{FactExtractionResult, MemorySystem, MemorySystemStats};
+pub use memory_system::{FactExtractionResult, MemorySystem, MemorySystemError, MemorySystemStats};
 pub use memory_voting::{FactVote, MemoryVotingEngine, RankedFact, VoteResult};
 pub use path_safety::sanitize_thread_id;
 pub use registry::{StorageBackendKind, StorageRegistry};
 pub use traits::{
     ArtifactStore, CheckpointStore, ManageAppConfig, ManageConfigStore, ManageTaskRecord,
-    ManageTaskStore, McpConfigStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
-    SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore, ThreadLifecycleStore,
-    ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord, ToolRecordStore,
-    UnifiedConfigStore,
+    ManageTaskStore, McpConfigStore, MemoryPersistence, MemoryStore, SandboxExecution,
+    SandboxExecutionStore, SkillRecord, SkillStore, StateError, StateErrorCategory, SubagentTask,
+    SubagentTaskStore, ThreadLifecycleStore, ThreadMeta, ThreadMetaStore, ThreadUploadStore,
+    ToolRecord, ToolRecordStore, UnifiedConfigStore,
 };
 
 use serde::{Deserialize, Serialize};
@@ -111,14 +111,14 @@ pub fn create_memory_store(
             // Create parent directory if needed
             if let Some(parent) = full_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    StateError::Backend(format!("Failed to create memory directory: {}", e))
+                    StateError::Initialization(format!("Failed to create memory directory: {}", e))
                 })?;
             }
 
             Ok(Box::new(LocalFsStateStore::new(full_path)))
         }
         // Other storage modes will be added as implementations become available
-        _ => Err(StateError::Backend(format!(
+        _ => Err(StateError::Config(format!(
             "Storage mode {:?} not implemented for memory store",
             storage_config.mode
         ))),
