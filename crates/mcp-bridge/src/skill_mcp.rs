@@ -68,12 +68,15 @@ impl SkillMcpManager {
         // 创建 MCP 服务器配置
         let server_config = McpServerConfig {
             name: server_id.clone(),
+            transport: "stdio".to_string(),
             command: skill.mcp_command.clone().unwrap_or_else(|| "mcp-server".to_string()),
             args: skill.mcp_args.clone().unwrap_or_default(),
             env: skill.mcp_env.clone().unwrap_or_default(),
+            url: None,
             enabled: true,
             is_skill_mcp: true,
             skill_names: vec![skill.name.clone()],
+            description: skill.description.clone(),
         };
 
         // 注册到活动服务器
