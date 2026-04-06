@@ -366,6 +366,90 @@ impl AgentKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use plugin_system::{BasePlugin, Plugin, PluginContext, PluginError, PluginLifecycleStage};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
+
+    struct RecordingHook {
+        stages: Arc<Mutex<Vec<LifecycleStage>>>,
+    }
+
+    #[async_trait]
+    impl crate::LifecycleHook for RecordingHook {
+        fn name(&self) -> &'static str {
+            "RecordingHook"
+        }
+
+        async fn on_lifecycle(&self, stage: LifecycleStage) -> crate::KernelResult<()> {
+            self.stages.lock().await.push(stage);
+            Ok(())
+        }
+    }
+
+    struct FailingInitializePlugin {
+        base: BasePlugin,
+    }
+
+    impl FailingInitializePlugin {
+        fn new(manifest: plugin_system::PluginManifest) -> Self {
+            Self { base: BasePlugin::new(manifest) }
+        }
+    }
+
+    #[async_trait]
+    impl Plugin for FailingInitializePlugin {
+        fn manifest(&self) -> &plugin_system::PluginManifest {
+            self.base.manifest()
+        }
+
+        fn state(&self) -> plugin_system::PluginState {
+            self.base.state()
+        }
+
+        async fn load(&mut self, ctx: &PluginContext) -> plugin_system::PluginResult<()> {
+            self.base.load(ctx).await
+        }
+
+        async fn initialize(&mut self, _ctx: &PluginContext) -> plugin_system::PluginResult<()> {
+            Err(PluginError::InitializationFailed("intentional initialize failure".to_string()))
+        }
+
+        async fn start(&mut self, ctx: &PluginContext) -> plugin_system::PluginResult<()> {
+            self.base.start(ctx).await
+        }
+
+        async fn stop(&mut self, ctx: &PluginContext) -> plugin_system::PluginResult<()> {
+            self.base.stop(ctx).await
+        }
+
+        async fn unload(&mut self, ctx: &PluginContext) -> plugin_system::PluginResult<()> {
+            self.base.unload(ctx).await
+        }
+    }
+
+    fn create_plugin_dir(name: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("agent-kernel-tests-{name}-{now}-{suffix}"));
+        let plugin_dir = root.join(name);
+
+        fs::create_dir_all(&plugin_dir).unwrap();
+        fs::write(
+            plugin_dir.join("plugin.yaml"),
+            format!(
+                "name: {name}\nversion: 0.1.0\ndescription: test plugin\nauthors:\n  - test\ntype: generic\nenabled: true\ndependencies: []\n"
+            ),
+        )
+        .unwrap();
+
+        root
+    }
 
     #[tokio::test]
     async fn test_kernel_lifecycle() {
@@ -398,6 +482,150 @@ mod tests {
         assert!(kernel.channel_manager().is_some());
         assert!(kernel.agent_loop().is_none());
         assert!(kernel.memory_system().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_initialize_runs_refactor_lifecycle_stages_in_order() {
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root should exist")
+            .to_path_buf();
+        let mut config = KernelConfig::default();
+        config.workspace_root = workspace_root.clone();
+        config.plugins_dir = workspace_root.join("plugins");
+
+        let kernel = AgentKernel::new(config);
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let hook = Arc::new(RecordingHook { stages: recorded.clone() });
+
+        for stage in [
+            LifecycleStage::BeforeInit,
+            LifecycleStage::InitConfig,
+            LifecycleStage::InitProvider,
+            LifecycleStage::InitMcp,
+            LifecycleStage::InitPlugin,
+            LifecycleStage::InitLoopState,
+            LifecycleStage::Init,
+            LifecycleStage::AfterInit,
+            LifecycleStage::BeforeStart,
+            LifecycleStage::Start,
+            LifecycleStage::AfterStart,
+            LifecycleStage::BeforeStop,
+            LifecycleStage::Stop,
+            LifecycleStage::AfterStop,
+            LifecycleStage::Cleanup,
+        ] {
+            kernel.lifecycle_manager().register_hook(stage, hook.clone()).await;
+        }
+
+        kernel.initialize().await.unwrap();
+        kernel.start().await.unwrap();
+        kernel.stop().await.unwrap();
+
+        assert_eq!(
+            *recorded.lock().await,
+            vec![
+                LifecycleStage::BeforeInit,
+                LifecycleStage::InitConfig,
+                LifecycleStage::InitProvider,
+                LifecycleStage::InitMcp,
+                LifecycleStage::InitPlugin,
+                LifecycleStage::InitLoopState,
+                LifecycleStage::Init,
+                LifecycleStage::AfterInit,
+                LifecycleStage::BeforeStart,
+                LifecycleStage::Start,
+                LifecycleStage::AfterStart,
+                LifecycleStage::BeforeStop,
+                LifecycleStage::Stop,
+                LifecycleStage::AfterStop,
+                LifecycleStage::Cleanup,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kernel_initialization_reports_plugin_failures_with_context() {
+        let plugins_dir = create_plugin_dir("failing-plugin");
+        let mut config = KernelConfig::default();
+        config.workspace_root = plugins_dir.clone();
+        config.plugins_dir = plugins_dir.clone();
+
+        let kernel = AgentKernel::new(config);
+        kernel.initialize().await.unwrap();
+
+        let plugin_manager = kernel.plugin_manager.get().expect("plugin manager should initialize");
+        plugin_manager
+            .register_factory("failing-plugin", |manifest| {
+                Box::new(FailingInitializePlugin::new(manifest))
+            })
+            .await;
+
+        let error = kernel.start().await.expect_err("plugin initialize should fail");
+        assert_eq!(error.category(), crate::KernelErrorCategory::Initialization);
+        assert!(error.to_string().contains("Failed to initialize plugins"));
+
+        match error {
+            KernelError::Context { context, source } => {
+                assert_eq!(context, "Failed to initialize plugins");
+                match *source {
+                    KernelError::Plugin { source, .. } => match source {
+                        plugin_system::PluginError::LifecycleFailed { plugin, stage, source } => {
+                            assert_eq!(plugin, "failing-plugin");
+                            assert_eq!(stage, PluginLifecycleStage::Initialize);
+                            match source.as_ref() {
+                                plugin_system::PluginError::InitializationFailed(details) => {
+                                    assert!(details.contains("intentional initialize failure"));
+                                }
+                                other => panic!("unexpected plugin source: {other:?}"),
+                            }
+                        }
+                        other => panic!("unexpected plugin error: {other:?}"),
+                    },
+                    other => panic!("unexpected kernel source: {other:?}"),
+                }
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        fs::remove_dir_all(plugins_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_initialize_reports_missing_memory_backend_with_context() {
+        let workspace_root = std::env::temp_dir().join("agent-kernel-missing-backend");
+        fs::create_dir_all(&workspace_root).unwrap();
+
+        let mut config = KernelConfig::default();
+        config.workspace_root = workspace_root.clone();
+        config.plugins_dir = workspace_root.join("plugins");
+        config.storage.mode = crate::config::StorageMode::Postgres;
+
+        let kernel = AgentKernel::new(config);
+        let error = kernel.initialize().await.expect_err("missing backend should fail");
+
+        assert_eq!(error.category(), crate::KernelErrorCategory::Config);
+        assert!(error.to_string().contains("Failed to create memory store"));
+
+        match error {
+            KernelError::Context { context, source } => {
+                assert_eq!(context, "Failed to create memory store");
+                match *source {
+                    KernelError::State { source, .. } => match source {
+                        state_abstraction::StateError::Config(message) => {
+                            assert!(message.contains("Postgres"));
+                            assert!(message.contains("not implemented"));
+                        }
+                        other => panic!("unexpected state source: {other}"),
+                    },
+                    other => panic!("unexpected kernel source: {other:?}"),
+                }
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        fs::remove_dir_all(workspace_root).unwrap();
     }
 
     #[tokio::test]
