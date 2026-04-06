@@ -1,7 +1,5 @@
 use llm_providers::{ProviderConfig, ProviderType};
 use serde::{Deserialize, Serialize};
-use std::env;
-use std::fmt;
 use std::path::Path;
 use std::path::PathBuf;
 use unified_config::loader::{AppConfigRef, ModelConfigRef};
@@ -47,9 +45,6 @@ pub struct KernelConfig {
     /// Extensions 配置路径
     #[serde(default)]
     pub extensions_config_path: Option<String>,
-
-    #[serde(default)]
-    pub migration: KernelMigrationConfig,
 
     /// Gateway 配置
     #[serde(default)]
@@ -270,82 +265,6 @@ pub struct ManageConfig {
     pub bind: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum KernelRuntimeMode {
-    #[default]
-    Legacy,
-    Unified,
-    Auto,
-}
-
-impl fmt::Display for KernelRuntimeMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::Legacy => "legacy",
-            Self::Unified => "unified",
-            Self::Auto => "auto",
-        };
-
-        write!(f, "{value}")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KernelMigrationConfig {
-    #[serde(default)]
-    pub mode: KernelRuntimeMode,
-    #[serde(default = "default_governance_root")]
-    pub governance_root: PathBuf,
-    #[serde(default = "default_true")]
-    pub rollback_on_unified_failure: bool,
-}
-
-impl Default for KernelMigrationConfig {
-    fn default() -> Self {
-        Self {
-            mode: KernelRuntimeMode::Legacy,
-            governance_root: default_governance_root(),
-            rollback_on_unified_failure: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelConfigResolution {
-    pub requested_mode: KernelRuntimeMode,
-    pub effective_mode: KernelRuntimeMode,
-    pub rollback_reason: Option<String>,
-}
-
-impl KernelConfigResolution {
-    fn legacy(requested_mode: KernelRuntimeMode) -> Self {
-        Self { requested_mode, effective_mode: KernelRuntimeMode::Legacy, rollback_reason: None }
-    }
-
-    fn unified(requested_mode: KernelRuntimeMode) -> Self {
-        Self { requested_mode, effective_mode: KernelRuntimeMode::Unified, rollback_reason: None }
-    }
-
-    fn auto_rollback(reason: impl Into<String>) -> Self {
-        Self {
-            requested_mode: KernelRuntimeMode::Auto,
-            effective_mode: KernelRuntimeMode::Legacy,
-            rollback_reason: Some(reason.into()),
-        }
-    }
-
-    pub fn rolled_back(&self) -> bool {
-        self.requested_mode != self.effective_mode
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ResolvedKernelConfig {
-    pub config: KernelConfig,
-    pub resolution: KernelConfigResolution,
-}
-
 fn default_manage_bind() -> String {
     "0.0.0.0:8081".to_string()
 }
@@ -369,7 +288,6 @@ impl Default for KernelConfig {
             storage: StorageConfig::default(),
             mcp: mcp_bridge::McpBridgeConfig::default(),
             extensions_config_path: None,
-            migration: KernelMigrationConfig::default(),
             gateway: Some(GatewayConfig::default()),
             manage: Some(ManageConfig::default()),
         }
@@ -397,36 +315,10 @@ fn default_true() -> bool {
 }
 
 impl KernelConfig {
-    pub fn resolve_runtime(path: &PathBuf) -> crate::KernelResult<ResolvedKernelConfig> {
+    pub fn resolve_runtime(path: &PathBuf) -> crate::KernelResult<Self> {
         let base_config = Self::from_file(path)?;
-        let requested_mode = runtime_mode_override_from_env().unwrap_or(base_config.migration.mode);
-
-        match requested_mode {
-            KernelRuntimeMode::Legacy => Ok(ResolvedKernelConfig {
-                config: base_config,
-                resolution: KernelConfigResolution::legacy(requested_mode),
-            }),
-            KernelRuntimeMode::Unified => {
-                let config = base_config.resolve_unified_runtime()?;
-                Ok(ResolvedKernelConfig {
-                    config,
-                    resolution: KernelConfigResolution::unified(requested_mode),
-                })
-            }
-            KernelRuntimeMode::Auto => match base_config.resolve_unified_runtime() {
-                Ok(config) => Ok(ResolvedKernelConfig {
-                    config,
-                    resolution: KernelConfigResolution::unified(requested_mode),
-                }),
-                Err(error) if base_config.migration.rollback_on_unified_failure => {
-                    Ok(ResolvedKernelConfig {
-                        config: base_config,
-                        resolution: KernelConfigResolution::auto_rollback(error.to_string()),
-                    })
-                }
-                Err(error) => Err(error),
-            },
-        }
+        let config_root = path.parent().unwrap_or_else(|| Path::new("."));
+        base_config.resolve_current_runtime(config_root)
     }
 
     pub fn from_unified_config(config: &UnifiedConfig) -> crate::KernelResult<Self> {
@@ -438,12 +330,13 @@ impl KernelConfig {
         Ok(Self { llm, ..Self::default() })
     }
 
-    fn resolve_unified_runtime(&self) -> crate::KernelResult<Self> {
+    fn resolve_current_runtime(&self, config_root: &Path) -> crate::KernelResult<Self> {
         let app_config = AppConfigRef {
-            models: vec![self.legacy_model_ref()],
+            models: vec![self.current_model_ref()],
             extensions_config_path: self.extensions_config_path.clone(),
         };
-        let governance_root = self.migration.governance_root.to_string_lossy().to_string();
+        let governance_root = config_root.join(default_governance_root());
+        let governance_root = governance_root.to_string_lossy().to_string();
         let unified_config =
             unified_config::loader::load_unified_config(&app_config, &governance_root)
                 .map_err(|error| crate::KernelError::Config(error.to_string()))?;
@@ -474,7 +367,7 @@ impl KernelConfig {
         Ok(config)
     }
 
-    fn legacy_model_ref(&self) -> ModelConfigRef {
+    fn current_model_ref(&self) -> ModelConfigRef {
         ModelConfigRef {
             name: self.llm.model.clone(),
             display_name: self.llm.model.clone(),
@@ -527,16 +420,6 @@ impl KernelConfig {
         mcp_config.servers = servers;
 
         Ok(mcp_config)
-    }
-}
-
-fn runtime_mode_override_from_env() -> Option<KernelRuntimeMode> {
-    let raw = env::var("OPEN_HARNESS_KERNEL_MODE").ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "legacy" => Some(KernelRuntimeMode::Legacy),
-        "unified" => Some(KernelRuntimeMode::Unified),
-        "auto" => Some(KernelRuntimeMode::Auto),
-        _ => None,
     }
 }
 
@@ -733,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_runtime_uses_unified_mode_when_governance_matches_legacy_model() {
+    fn test_resolve_runtime_loads_current_runtime_configuration() {
         let root = temp_test_dir();
         let governance_root = root.join("governance");
         fs::create_dir_all(&governance_root).unwrap();
@@ -772,31 +655,25 @@ llm:
   provider_type: open_ai
   model: gpt-4
   api_key: $OPENAI_API_KEY
-migration:
-  mode: unified
-  governance_root: {}
 "#,
                 root.join("extensions_config.json").display(),
-                governance_root.display(),
             ),
         )
         .unwrap();
 
         let resolved = KernelConfig::resolve_runtime(&config_path).unwrap();
 
-        assert_eq!(resolved.resolution.requested_mode, KernelRuntimeMode::Unified);
-        assert_eq!(resolved.resolution.effective_mode, KernelRuntimeMode::Unified);
-        assert_eq!(resolved.config.llm.provider_type, ProviderType::OpenAI);
-        assert_eq!(resolved.config.llm.model, "gpt-4");
-        assert_eq!(resolved.config.mcp.servers.len(), 1);
-        assert_eq!(resolved.config.mcp.servers[0].name, "github");
-        assert_eq!(resolved.config.mcp.servers[0].transport, "stdio");
+        assert_eq!(resolved.llm.provider_type, ProviderType::OpenAI);
+        assert_eq!(resolved.llm.model, "gpt-4");
+        assert_eq!(resolved.mcp.servers.len(), 1);
+        assert_eq!(resolved.mcp.servers[0].name, "github");
+        assert_eq!(resolved.mcp.servers[0].transport, "stdio");
 
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn test_resolve_runtime_auto_rolls_back_to_legacy_mode_on_unified_failure() {
+    fn test_resolve_runtime_surfaces_current_runtime_load_failure() {
         let root = temp_test_dir();
         let governance_root = root.join("governance");
         fs::create_dir_all(&governance_root).unwrap();
@@ -815,29 +692,14 @@ default_model: does-not-exist
 llm:
   provider_type: anthropic
   model: claude-3-7-sonnet
-migration:
-  mode: auto
-  governance_root: {}
-  rollback_on_unified_failure: true
 "#,
-                governance_root.display(),
             ),
         )
         .unwrap();
 
-        let resolved = KernelConfig::resolve_runtime(&config_path).unwrap();
+        let error = KernelConfig::resolve_runtime(&config_path).unwrap_err();
 
-        assert_eq!(resolved.resolution.requested_mode, KernelRuntimeMode::Auto);
-        assert_eq!(resolved.resolution.effective_mode, KernelRuntimeMode::Legacy);
-        assert!(resolved.resolution.rolled_back());
-        assert!(resolved
-            .resolution
-            .rollback_reason
-            .as_deref()
-            .unwrap()
-            .contains("default_model 'does-not-exist'"));
-        assert_eq!(resolved.config.llm.provider_type, ProviderType::Anthropic);
-        assert_eq!(resolved.config.llm.model, "claude-3-7-sonnet");
+        assert!(error.to_string().contains("does-not-exist"));
 
         fs::remove_dir_all(root).unwrap();
     }

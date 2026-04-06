@@ -19,17 +19,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 加载配置
     let config_path = PathBuf::from("config.yaml");
-    let resolved_config = KernelConfig::resolve_runtime(&config_path)?;
-
-    info!(
-        "Kernel runtime mode requested={}, effective={}",
-        resolved_config.resolution.requested_mode, resolved_config.resolution.effective_mode
-    );
-    if let Some(reason) = &resolved_config.resolution.rollback_reason {
-        info!("Kernel runtime rolled back to legacy mode: {reason}");
-    }
-
-    let kernel_config = resolved_config.config;
+    let kernel_config = KernelConfig::resolve_runtime(&config_path)?;
 
     info!("Workspace root: {:?}", kernel_config.workspace_root);
     info!("Plugins directory: {:?}", kernel_config.plugins_dir);

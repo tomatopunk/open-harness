@@ -20,8 +20,7 @@ mod streaming_runtime;
 pub use agent_loop::{AgentLoop, AgentLoopState};
 pub use channel_manager::{Channel, ChannelManager, InboundMessage, OutboundMessage};
 pub use config::{
-    AgentLoopConfig, ChannelsConfig, DingtalkConfig, KernelConfig, KernelConfigResolution,
-    KernelMigrationConfig, KernelRuntimeMode, MemoryConfig, ResolvedKernelConfig, StorageConfig,
+    AgentLoopConfig, ChannelsConfig, DingtalkConfig, KernelConfig, MemoryConfig, StorageConfig,
     StorageMode,
 };
 pub use error::{KernelError, KernelErrorCategory, KernelResult};
