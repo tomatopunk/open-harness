@@ -386,11 +386,17 @@ mod tests {
 
     fn test_kernel(name: &str) -> AgentKernel {
         let workspace_root = create_workspace_root(name);
-        let mut config = KernelConfig::default();
-        config.workspace_root = workspace_root.clone();
-        config.plugins_dir = workspace_root.join("plugins");
-        config.storage.local_fs =
-            Some(LocalFsConfig { root: std::path::PathBuf::from(".deer-flow/local-fs") });
+        let config = KernelConfig {
+            workspace_root: workspace_root.clone(),
+            plugins_dir: workspace_root.join("plugins"),
+            storage: crate::config::StorageConfig {
+                local_fs: Some(LocalFsConfig {
+                    root: std::path::PathBuf::from(".deer-flow/local-fs"),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         AgentKernel::new(config)
     }
 

@@ -603,9 +603,11 @@ mod tests {
             .and_then(|path| path.parent())
             .expect("workspace root should exist")
             .to_path_buf();
-        let mut config = KernelConfig::default();
-        config.workspace_root = workspace_root.clone();
-        config.plugins_dir = workspace_root.join("plugins");
+        let config = KernelConfig {
+            workspace_root: workspace_root.clone(),
+            plugins_dir: workspace_root.join("plugins"),
+            ..Default::default()
+        };
 
         let kernel = AgentKernel::new(config);
         let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -660,9 +662,11 @@ mod tests {
     #[tokio::test]
     async fn test_kernel_initialization_reports_plugin_failures_with_context() {
         let plugins_dir = create_plugin_dir("failing-plugin");
-        let mut config = KernelConfig::default();
-        config.workspace_root = plugins_dir.clone();
-        config.plugins_dir = plugins_dir.clone();
+        let config = KernelConfig {
+            workspace_root: plugins_dir.clone(),
+            plugins_dir: plugins_dir.clone(),
+            ..Default::default()
+        };
 
         let kernel = AgentKernel::new(config);
         kernel.initialize().await.unwrap();
@@ -709,9 +713,11 @@ mod tests {
         let workspace_root = std::env::temp_dir().join("agent-kernel-missing-backend");
         fs::create_dir_all(&workspace_root).unwrap();
 
-        let mut config = KernelConfig::default();
-        config.workspace_root = workspace_root.clone();
-        config.plugins_dir = workspace_root.join("plugins");
+        let mut config = KernelConfig {
+            workspace_root: workspace_root.clone(),
+            plugins_dir: workspace_root.join("plugins"),
+            ..Default::default()
+        };
         config.storage.mode = crate::config::StorageMode::Postgres;
 
         let kernel = AgentKernel::new(config);
@@ -747,9 +753,11 @@ mod tests {
             .and_then(|path| path.parent())
             .expect("workspace root should exist")
             .to_path_buf();
-        let mut config = KernelConfig::default();
-        config.workspace_root = workspace_root.clone();
-        config.plugins_dir = workspace_root.join("plugins");
+        let config = KernelConfig {
+            workspace_root: workspace_root.clone(),
+            plugins_dir: workspace_root.join("plugins"),
+            ..Default::default()
+        };
         let kernel = AgentKernel::new(config);
 
         kernel.initialize().await.unwrap();

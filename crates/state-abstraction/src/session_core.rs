@@ -52,21 +52,11 @@ impl SessionPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CreateSessionRequest {
     pub attached_thread_id: Option<Uuid>,
     pub context: SessionContext,
     pub policy: SessionPolicy,
-}
-
-impl Default for CreateSessionRequest {
-    fn default() -> Self {
-        Self {
-            attached_thread_id: None,
-            context: SessionContext::default(),
-            policy: SessionPolicy::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
