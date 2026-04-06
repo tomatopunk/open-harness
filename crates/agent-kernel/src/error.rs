@@ -36,6 +36,12 @@ pub enum KernelError {
         source: state_abstraction::StateError,
     },
 
+    #[error("State machine error: {source}")]
+    StateMachine {
+        #[source]
+        source: crate::state_machine::KernelStateTransitionError,
+    },
+
     #[error("Lifecycle error: {0}")]
     Lifecycle(String),
 
@@ -73,7 +79,9 @@ impl KernelError {
             Self::Plugin { category, .. }
             | Self::McpBridge { category, .. }
             | Self::State { category, .. } => *category,
-            Self::Lifecycle(_) | Self::Event(_) | Self::Any(_) => KernelErrorCategory::Runtime,
+            Self::StateMachine { .. } | Self::Lifecycle(_) | Self::Event(_) | Self::Any(_) => {
+                KernelErrorCategory::Runtime
+            }
             Self::ExternalConnection(_) | Self::Io(_) => KernelErrorCategory::ExternalConnection,
             Self::Context { source, .. } => source.category(),
         }
@@ -137,6 +145,12 @@ impl From<state_abstraction::StateError> for KernelError {
             },
             source: err,
         }
+    }
+}
+
+impl From<crate::state_machine::KernelStateTransitionError> for KernelError {
+    fn from(err: crate::state_machine::KernelStateTransitionError) -> Self {
+        KernelError::StateMachine { source: err }
     }
 }
 

@@ -3,7 +3,10 @@ use crate::channel_manager::ChannelManager;
 use crate::config::KernelConfig;
 use crate::events::{EventBus, KernelStartedEvent, KernelStoppedEvent};
 use crate::hooks::HookSystem;
-use crate::lifecycle::{shutdown_stages, LifecycleManager, LifecycleStage};
+use crate::lifecycle::LifecycleManager;
+use crate::state_machine::{
+    KernelEvent, KernelSideEffect, KernelState, KernelStateMachine, KernelTransition,
+};
 use crate::{KernelError, KernelResult};
 use llm_providers::{create_provider, LLMProvider};
 use mcp_bridge::McpBridgeManager;
@@ -31,15 +34,6 @@ pub struct AgentKernel {
     session_core: Arc<SessionCore>,
     channel_manager: Arc<OnceCell<ChannelManager>>,
     state: Arc<RwLock<KernelState>>,
-}
-
-/// Kernel lifecycle state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KernelState {
-    Created,
-    Initialized,
-    Running,
-    Stopped,
 }
 
 impl AgentKernel {
@@ -129,23 +123,139 @@ impl AgentKernel {
         self.session_core.close_session(session_id).await.map_err(Into::into)
     }
 
+    async fn apply_transition(
+        &self,
+        state: &mut KernelState,
+        event: KernelEvent,
+    ) -> KernelResult<()> {
+        let transition = KernelStateMachine::transition(*state, event)?;
+        self.apply_side_effects(&transition).await?;
+        *state = transition.to;
+        Ok(())
+    }
+
+    async fn apply_side_effects(&self, transition: &KernelTransition) -> KernelResult<()> {
+        for side_effect in &transition.side_effects {
+            self.apply_side_effect(side_effect).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_side_effect(&self, side_effect: &KernelSideEffect) -> KernelResult<()> {
+        match side_effect {
+            KernelSideEffect::InitializeProviderAdapter => self.initialize_provider_adapter(),
+            KernelSideEffect::InitializeMcpAdapter => self.initialize_mcp_adapter().await,
+            KernelSideEffect::InitializePluginAdapter => self.initialize_plugin_adapter().await,
+            KernelSideEffect::InitializeLoopStateAdapter => self.initialize_loop_state_adapter(),
+            KernelSideEffect::InitializeChannelAdapter => self.initialize_channel_adapter(),
+            KernelSideEffect::RunLifecycleStages(stages) => {
+                self.lifecycle_manager.run_stages(stages).await
+            }
+            KernelSideEffect::LoadPlugins => {
+                if let Some(plugin_manager) = self.plugin_manager.get() {
+                    plugin_manager
+                        .load_all_plugins()
+                        .await
+                        .map_err(|error| KernelError::context("Failed to load plugins", error))?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::InitializePlugins => {
+                if let Some(plugin_manager) = self.plugin_manager.get() {
+                    plugin_manager.initialize_all_plugins().await.map_err(|error| {
+                        KernelError::context("Failed to initialize plugins", error)
+                    })?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::StartPlugins => {
+                if let Some(plugin_manager) = self.plugin_manager.get() {
+                    plugin_manager
+                        .start_all_plugins()
+                        .await
+                        .map_err(|error| KernelError::context("Failed to start plugins", error))?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::StartChannels => {
+                if let Some(channel_manager) = self.channel_manager.get() {
+                    channel_manager.start_all().await.map_err(|error| {
+                        KernelError::ExternalConnection(format!(
+                            "Failed to start channels: {}",
+                            error
+                        ))
+                    })?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::PublishKernelStarted => {
+                self.event_bus.publish(KernelStartedEvent).await?;
+                Ok(())
+            }
+            KernelSideEffect::PublishKernelStopped => {
+                self.event_bus.publish(KernelStoppedEvent).await?;
+                Ok(())
+            }
+            KernelSideEffect::StopChannels => {
+                if let Some(channel_manager) = self.channel_manager.get() {
+                    channel_manager.stop_all().await.map_err(|error| {
+                        KernelError::Lifecycle(format!("Failed to stop channels: {}", error))
+                    })?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::StopPlugins => {
+                if let Some(plugin_manager) = self.plugin_manager.get() {
+                    plugin_manager
+                        .stop_all_plugins()
+                        .await
+                        .map_err(|error| KernelError::context("Failed to stop plugins", error))?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::UnloadPlugins => {
+                if let Some(plugin_manager) = self.plugin_manager.get() {
+                    plugin_manager
+                        .unload_all_plugins()
+                        .await
+                        .map_err(|error| KernelError::context("Failed to unload plugins", error))?;
+                }
+                Ok(())
+            }
+            KernelSideEffect::RecordToolExecutionStart { session_id, tool_call_id, tool_name } => {
+                tracing::debug!(
+                    %session_id,
+                    tool_call_id = %tool_call_id,
+                    tool_name = %tool_name,
+                    "Kernel state machine recorded tool execution start"
+                );
+                Ok(())
+            }
+            KernelSideEffect::RecordToolExecutionFinish {
+                session_id,
+                tool_call_id,
+                tool_name,
+                success,
+            } => {
+                tracing::debug!(
+                    %session_id,
+                    tool_call_id = %tool_call_id,
+                    tool_name = %tool_name,
+                    success = *success,
+                    "Kernel state machine recorded tool execution finish"
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// 初始化 kernel
     pub async fn initialize(&self) -> KernelResult<()> {
         let mut state = self.state.write().await;
-        if *state != KernelState::Created {
-            return Err(KernelError::Lifecycle("Kernel already initialized".to_string()));
-        }
 
         tracing::info!("Initializing Open Harness Agent Kernel...");
 
-        self.initialize_provider_adapter()?;
-        self.initialize_mcp_adapter().await?;
-        self.initialize_plugin_adapter().await?;
-        self.initialize_loop_state_adapter()?;
-        self.initialize_channel_adapter()?;
-        self.run_initialize_lifecycle().await?;
-
-        *state = KernelState::Initialized;
+        self.apply_transition(&mut state, KernelEvent::Initialize).await?;
         tracing::info!("Kernel initialized successfully");
 
         Ok(())
@@ -270,69 +380,13 @@ impl AgentKernel {
             .map_err(|_| KernelError::Lifecycle("Channel manager already initialized".to_string()))
     }
 
-    async fn run_initialize_lifecycle(&self) -> KernelResult<()> {
-        self.lifecycle_manager
-            .run_stages(&[
-                LifecycleStage::BeforeInit,
-                LifecycleStage::InitConfig,
-                LifecycleStage::InitProvider,
-                LifecycleStage::InitMcp,
-                LifecycleStage::InitPlugin,
-                LifecycleStage::InitLoopState,
-                LifecycleStage::Init,
-                LifecycleStage::AfterInit,
-            ])
-            .await
-    }
-
     /// 启动 kernel
     pub async fn start(&self) -> KernelResult<()> {
         let mut state = self.state.write().await;
-        if *state != KernelState::Initialized {
-            return Err(KernelError::Lifecycle(format!(
-                "Cannot start kernel in state: {:?}",
-                state
-            )));
-        }
 
         tracing::info!("Starting Open Harness Agent Kernel...");
 
-        // 运行启动生命周期
-        self.lifecycle_manager
-            .run_stages(&[
-                LifecycleStage::BeforeStart,
-                LifecycleStage::Start,
-                LifecycleStage::AfterStart,
-            ])
-            .await?;
-
-        // 加载并启动插件
-        if let Some(plugin_manager) = self.plugin_manager.get() {
-            plugin_manager
-                .load_all_plugins()
-                .await
-                .map_err(|error| KernelError::context("Failed to load plugins", error))?;
-            plugin_manager
-                .initialize_all_plugins()
-                .await
-                .map_err(|error| KernelError::context("Failed to initialize plugins", error))?;
-            plugin_manager
-                .start_all_plugins()
-                .await
-                .map_err(|error| KernelError::context("Failed to start plugins", error))?;
-        }
-
-        // 启动所有渠道
-        if let Some(channel_manager) = self.channel_manager.get() {
-            channel_manager.start_all().await.map_err(|e| {
-                KernelError::ExternalConnection(format!("Failed to start channels: {}", e))
-            })?;
-        }
-
-        // 发布启动事件
-        self.event_bus.publish(KernelStartedEvent).await?;
-
-        *state = KernelState::Running;
+        self.apply_transition(&mut state, KernelEvent::Start).await?;
         tracing::info!("Kernel started successfully");
 
         Ok(())
@@ -341,42 +395,10 @@ impl AgentKernel {
     /// 停止 kernel
     pub async fn stop(&self) -> KernelResult<()> {
         let mut state = self.state.write().await;
-        if *state != KernelState::Running {
-            return Err(KernelError::Lifecycle(format!(
-                "Cannot stop kernel in state: {:?}",
-                state
-            )));
-        }
 
         tracing::info!("Stopping Open Harness Agent Kernel...");
 
-        // 发布停止事件
-        self.event_bus.publish(KernelStoppedEvent).await?;
-
-        // 停止所有渠道
-        if let Some(channel_manager) = self.channel_manager.get() {
-            channel_manager
-                .stop_all()
-                .await
-                .map_err(|e| KernelError::Lifecycle(format!("Failed to stop channels: {}", e)))?;
-        }
-
-        // 停止插件
-        if let Some(plugin_manager) = self.plugin_manager.get() {
-            plugin_manager
-                .stop_all_plugins()
-                .await
-                .map_err(|error| KernelError::context("Failed to stop plugins", error))?;
-            plugin_manager
-                .unload_all_plugins()
-                .await
-                .map_err(|error| KernelError::context("Failed to unload plugins", error))?;
-        }
-
-        // 运行停止生命周期
-        self.lifecycle_manager.run_stages(&shutdown_stages()).await?;
-
-        *state = KernelState::Stopped;
+        self.apply_transition(&mut state, KernelEvent::Stop).await?;
         tracing::info!("Kernel stopped successfully");
 
         Ok(())
@@ -393,6 +415,8 @@ impl AgentKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::LifecycleStage;
+    use crate::{KernelEvent, KernelGuard};
     use crate::{SessionContext, SessionPolicy};
     use async_trait::async_trait;
     use plugin_system::{BasePlugin, Plugin, PluginContext, PluginError, PluginLifecycleStage};
@@ -495,6 +519,21 @@ mod tests {
 
         kernel.stop().await.unwrap();
         assert!(*kernel.state.read().await == KernelState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_kernel_state_machine_rejects_invalid_start_transition() {
+        let kernel = AgentKernel::new(KernelConfig::default());
+        let error = kernel.start().await.expect_err("start should fail before initialize");
+
+        match error {
+            KernelError::StateMachine { source } => {
+                assert_eq!(source.from, KernelState::Created);
+                assert_eq!(source.event, KernelEvent::Start);
+                assert_eq!(source.guard, KernelGuard::StateIs(KernelState::Initialized));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]
