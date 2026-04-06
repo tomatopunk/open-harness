@@ -8,6 +8,7 @@ use crate::state_machine::{
     KernelEvent, KernelSideEffect, KernelState, KernelStateMachine, KernelTransition,
 };
 use crate::{KernelError, KernelResult};
+use agent_ports::StreamingToolRuntime;
 use llm_providers::{create_provider, LLMProvider};
 use mcp_bridge::McpBridgeManager;
 use plugin_system::PluginManager;
@@ -33,6 +34,7 @@ pub struct AgentKernel {
     memory_system: Arc<OnceCell<MemorySystem<Box<dyn MemoryStore>>>>,
     session_core: Arc<SessionCore>,
     channel_manager: Arc<OnceCell<ChannelManager>>,
+    tool_runtime: Arc<StreamingToolRuntime>,
     state: Arc<RwLock<KernelState>>,
 }
 
@@ -51,6 +53,7 @@ impl AgentKernel {
             memory_system: Arc::new(OnceCell::new()),
             session_core: Arc::new(SessionCore::new()),
             channel_manager: Arc::new(OnceCell::new()),
+            tool_runtime: Arc::new(StreamingToolRuntime::new()),
             state: Arc::new(RwLock::new(KernelState::Created)),
         }
     }
@@ -94,6 +97,10 @@ impl AgentKernel {
         &self.session_core
     }
 
+    pub fn tool_runtime(&self) -> &Arc<StreamingToolRuntime> {
+        &self.tool_runtime
+    }
+
     /// 获取生命周期管理器
     pub fn lifecycle_manager(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle_manager
@@ -102,6 +109,15 @@ impl AgentKernel {
     /// 获取配置
     pub fn config(&self) -> &KernelConfig {
         &self.config
+    }
+
+    pub(crate) async fn transition_tool_execution(&self, event: KernelEvent) -> KernelResult<()> {
+        let mut state = self.state.write().await;
+        self.apply_transition(&mut state, event).await
+    }
+
+    pub(crate) async fn current_state(&self) -> KernelState {
+        *self.state.read().await
     }
 
     pub async fn create_session(

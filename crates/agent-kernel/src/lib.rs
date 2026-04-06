@@ -14,6 +14,7 @@ mod hooks;
 mod kernel;
 mod lifecycle;
 mod state_machine;
+mod streaming_runtime;
 
 pub use agent_loop::AgentLoop;
 pub use channel_manager::{Channel, ChannelManager, InboundMessage, OutboundMessage};
@@ -35,4 +36,8 @@ pub use state_abstraction::{
 pub use state_machine::{
     KernelEvent, KernelGuard, KernelSideEffect, KernelState, KernelStateMachine,
     KernelStateTransitionError, KernelTransition,
+};
+pub use streaming_runtime::{
+    AgentForkToolAdapter, BashToolAdapter, FileToolAdapter, McpToolAdapter, SkillToolAdapter,
+    ToolAdapterExecutor, WebToolAdapter,
 };
