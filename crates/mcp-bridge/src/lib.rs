@@ -9,7 +9,7 @@ mod skill_mcp;
 mod types;
 
 pub use config::{McpBridgeConfig, McpServerConfig};
-pub use error::{McpBridgeError, McpBridgeResult};
+pub use error::{McpBridgeError, McpBridgeErrorCategory, McpBridgeResult};
 pub use manager::McpBridgeManager;
 pub use skill_mcp::SkillMcpManager;
 pub use types::{RiskLevel, SideEffectClass, ToolManifest, ToolProviderType};

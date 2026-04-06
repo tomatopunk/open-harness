@@ -93,7 +93,11 @@ pub struct McpServerConfig {
     /// 服务器名称
     pub name: String,
 
+    #[serde(default = "default_transport")]
+    pub transport: String,
+
     /// 服务器命令
+    #[serde(default)]
     pub command: String,
 
     /// 命令参数
@@ -103,6 +107,9 @@ pub struct McpServerConfig {
     /// 环境变量
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+
+    #[serde(default)]
+    pub url: Option<String>,
 
     /// 是否启用
     #[serde(default = "default_true")]
@@ -115,6 +122,13 @@ pub struct McpServerConfig {
     /// 相关技能名称（如果是技能 MCP）
     #[serde(default)]
     pub skill_names: Vec<String>,
+
+    #[serde(default)]
+    pub description: String,
+}
+
+fn default_transport() -> String {
+    "stdio".to_string()
 }
 
 impl McpServerConfig {
