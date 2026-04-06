@@ -451,7 +451,7 @@ fn build_execution_audit_store(config: &KernelConfig) -> Arc<dyn SandboxExecutio
         .local_fs
         .as_ref()
         .map(|local_fs| local_fs.root.clone())
-        .unwrap_or_else(|| std::path::PathBuf::from(".deer-flow/local-fs"));
+        .unwrap_or_else(|| std::path::PathBuf::from(".data/local-fs"));
 
     Arc::new(LocalFsStateStore::new(config.workspace_root.join(local_fs_root)))
 }

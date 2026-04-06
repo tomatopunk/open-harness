@@ -56,8 +56,8 @@ docker-down:
 	docker compose -f deploy/docker/docker-compose.yml down
 
 create-local-fs:
-	@mkdir -p .deer-flow/local-fs/{config,tasks,threads,uploads,artifacts,memory,skills}
-	@echo "Created local_fs directory structure at .deer-flow/local-fs/"
+	@mkdir -p .data/local-fs/{config,tasks,threads,uploads,artifacts,memory,skills}
+	@echo "Created local_fs directory structure at .data/local-fs/"
 
 dev: create-local-fs
 	cp config.dev.yaml config.yaml

@@ -90,7 +90,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             mode: StorageMode::LocalFs,
-            local_fs: Some(LocalFsConfig { root: PathBuf::from(".deer-flow/local-fs") }),
+            local_fs: Some(LocalFsConfig { root: PathBuf::from(".data/local-fs") }),
             sqlite: None,
         }
     }
@@ -108,7 +108,7 @@ pub fn create_memory_store(
     match storage_config.mode {
         StorageMode::LocalFs => {
             // Build full storage path
-            let default_root = PathBuf::from(".deer-flow/local-fs");
+            let default_root = PathBuf::from(".data/local-fs");
             let local_fs_root =
                 storage_config.local_fs.as_ref().map(|l| &l.root).unwrap_or(&default_root);
             let full_path = workspace_root.join(local_fs_root).join(memory_storage_path);

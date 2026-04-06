@@ -807,7 +807,7 @@ impl ThreadLifecycleStore for LocalFsStateStore {
 
 impl Default for LocalFsStateStore {
     fn default() -> Self {
-        Self::new(".deer-flow/local-fs")
+        Self::new(".data/local-fs")
     }
 }
 

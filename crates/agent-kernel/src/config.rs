@@ -192,7 +192,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             mode: StorageMode::LocalFs,
-            local_fs: Some(LocalFsConfig { root: PathBuf::from(".deer-flow/local-fs") }),
+            local_fs: Some(LocalFsConfig { root: PathBuf::from(".data/local-fs") }),
             sqlite: None,
         }
     }

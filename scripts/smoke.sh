@@ -4,7 +4,7 @@ GATEWAY="${GATEWAY_URL:-http://127.0.0.1:8080}"
 MANAGE="${MANAGE_URL:-http://127.0.0.1:8081}"
 CHANNEL="${CHANNEL_URL:-http://127.0.0.1:8082}"
 ORCH="${ORCH_URL:-http://127.0.0.1:8083}"
-LOCAL_FS_ROOT="${LOCAL_FS_ROOT:-.deer-flow/local-fs}"
+LOCAL_FS_ROOT="${LOCAL_FS_ROOT:-.data/local-fs}"
 
 echo "== health checks"
 curl -fsS "$GATEWAY/healthz"

@@ -390,9 +390,7 @@ mod tests {
             workspace_root: workspace_root.clone(),
             plugins_dir: workspace_root.join("plugins"),
             storage: crate::config::StorageConfig {
-                local_fs: Some(LocalFsConfig {
-                    root: std::path::PathBuf::from(".deer-flow/local-fs"),
-                }),
+                local_fs: Some(LocalFsConfig { root: std::path::PathBuf::from(".data/local-fs") }),
                 ..Default::default()
             },
             ..Default::default()

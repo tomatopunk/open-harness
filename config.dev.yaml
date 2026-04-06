@@ -11,7 +11,7 @@ plugins_dir: plugins
 storage:
   mode: localfs
   local_fs:
-    root: .deer-flow/local-fs
+    root: .data/local-fs
   sqlite:
     url: null
 
