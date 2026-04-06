@@ -159,7 +159,7 @@ impl<S: MemoryPersistence> MemorySystem<S> {
 
         Ok(FactExtractionResult {
             facts_extracted,
-            facts_removed: facts_removed as usize,
+            facts_removed,
             conflicts_resolved: manage_stats.conflicts_resolved,
             facts_evicted: manage_stats.facts_evicted,
             total_facts: memory.facts.len(),
