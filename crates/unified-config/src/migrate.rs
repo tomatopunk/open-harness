@@ -305,6 +305,7 @@ mod tests {
                     output_version: None,
                 },
             ],
+            extensions_config_path: None,
         };
 
         let unified = UnifiedConfig {

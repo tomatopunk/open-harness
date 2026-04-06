@@ -4,29 +4,58 @@
 //! and merge them into a unified configuration.
 
 use crate::{
-    ModelConfig, ModelEntry, ModelRegistry, PolicySwitches, SubagentBudget, SubagentConfig,
-    ToolAssemblyPolicy, ToolManifest, ToolRegistry, UnifiedConfig,
+    ExtensionsConfig, ModelConfig, ModelEntry, ModelRegistry, PolicySwitches, SubagentBudget,
+    SubagentConfig, ToolAssemblyPolicy, ToolManifest, ToolRegistry, UnifiedConfig,
 };
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigLoaderError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("config io error in {config_source} ({path}): {message}")]
+    Io { config_source: &'static str, path: String, message: String },
 
-    #[error("YAML parsing error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    #[error("config parse error in {config_source} ({path}, {format}): {message}")]
+    Parse { config_source: &'static str, path: String, format: &'static str, message: String },
 
-    #[error("JSON parsing error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("config validation error in {config_source}{path_suffix}: {message}")]
+    Validation { config_source: &'static str, path_suffix: String, message: String },
 
-    #[error("Missing required field: {0}")]
+    #[error("config validation error: {0}")]
     MissingField(String),
 
-    #[error("Invalid configuration: {0}")]
+    #[error("config validation error: {0}")]
     InvalidConfig(String),
+}
+
+impl ConfigLoaderError {
+    pub fn io(config_source: &'static str, path: &Path, error: std::io::Error) -> Self {
+        Self::Io { config_source, path: path.display().to_string(), message: error.to_string() }
+    }
+
+    pub fn parse<E: std::fmt::Display>(
+        config_source: &'static str,
+        path: &Path,
+        format: &'static str,
+        error: E,
+    ) -> Self {
+        Self::Parse {
+            config_source,
+            path: path.display().to_string(),
+            format,
+            message: error.to_string(),
+        }
+    }
+
+    pub fn validation(
+        config_source: &'static str,
+        path: Option<&Path>,
+        message: impl Into<String>,
+    ) -> Self {
+        let path_suffix = path.map(|path| format!(" ({})", path.display())).unwrap_or_default();
+        Self::Validation { config_source, path_suffix, message: message.into() }
+    }
 }
 
 /// Load unified configuration from AppConfig and governance directory.
@@ -56,13 +85,25 @@ pub fn load_unified_config(
     // Load ACP agents from governance/acp_agents.yaml
     let acp_agents = load_governance_acp_agents(governance_root)?;
 
-    Ok(UnifiedConfig { models: merged_models, tools, subagents, policies, acp_agents })
+    let governance_skills = load_governance_skills(governance_root)?;
+    let extensions_config = load_extensions_config(app_cfg.extensions_config_path.as_deref())?;
+    let policies = merge_extensions_into_policies(
+        merge_skills_into_policies(policies, &governance_skills),
+        extensions_config.as_ref(),
+    );
+
+    let unified_config =
+        UnifiedConfig { models: merged_models, tools, subagents, policies, acp_agents };
+    validate_unified_config(&unified_config)?;
+
+    Ok(unified_config)
 }
 
 /// Reference to AppConfig fields needed for loading.
 /// This avoids circular dependencies by not requiring the full AppConfig type.
 pub struct AppConfigRef {
     pub models: Vec<ModelConfigRef>,
+    pub extensions_config_path: Option<String>,
 }
 
 /// Reference to ModelConfig fields needed for loading.
@@ -88,8 +129,10 @@ fn load_governance_models(
         return Ok(GovernanceModelsFile::default());
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let file: GovernanceModelsFile = serde_yaml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance models", &path, error))?;
+    let file: GovernanceModelsFile = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance models", &path, "yaml", error))?;
     Ok(file)
 }
 
@@ -152,8 +195,10 @@ pub fn load_governance_tools(governance_root: &str) -> Result<ToolRegistry, Conf
         return Ok(ToolRegistry::default());
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let file: GovernanceToolsFile = serde_yaml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance tools", &path, error))?;
+    let file: GovernanceToolsFile = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance tools", &path, "yaml", error))?;
 
     let manifests = file.manifests.into_iter().map(|m| m.into()).collect();
 
@@ -253,8 +298,10 @@ pub fn load_governance_policies(
         return Ok(PolicySwitches::default());
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let file: GovernancePoliciesFile = serde_yaml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance policies", &path, error))?;
+    let file: GovernancePoliciesFile = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance policies", &path, "yaml", error))?;
 
     let mut allowed_tags = HashSet::new();
     if let Some(tool_assembly) = &file.tool_assembly {
@@ -319,8 +366,10 @@ pub fn load_governance_subagents(
         return Ok(SubagentConfig::default());
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let file: GovernanceSubagentsFile = serde_yaml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance subagents", &path, error))?;
+    let file: GovernanceSubagentsFile = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance subagents", &path, "yaml", error))?;
 
     Ok(SubagentConfig {
         max_concurrent: file.max_concurrent.unwrap_or(4),
@@ -346,8 +395,10 @@ pub fn load_governance_skills(governance_root: &str) -> Result<Vec<String>, Conf
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&path)?;
-    let file: GovernanceSkillsFile = serde_yaml::from_str(&content)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance skills", &path, error))?;
+    let file: GovernanceSkillsFile = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance skills", &path, "yaml", error))?;
 
     let enabled_skills = file.entries.into_iter().filter(|e| e.enabled).map(|e| e.name).collect();
 
@@ -373,7 +424,32 @@ pub fn merge_skills_into_policies(
     mut policies: PolicySwitches,
     skills: &[String],
 ) -> PolicySwitches {
-    policies.enabled_skills = skills.to_vec();
+    let unique_skills = skills.iter().cloned().collect::<BTreeSet<_>>();
+    policies.enabled_skills = unique_skills.into_iter().collect();
+    policies
+}
+
+fn merge_extensions_into_policies(
+    mut policies: PolicySwitches,
+    extensions: Option<&ExtensionsConfig>,
+) -> PolicySwitches {
+    let Some(extensions) = extensions else {
+        return policies;
+    };
+
+    let mut skill_state = policies
+        .enabled_skills
+        .iter()
+        .cloned()
+        .map(|skill| (skill, true))
+        .collect::<BTreeMap<_, _>>();
+
+    for (name, state) in &extensions.skills {
+        skill_state.insert(name.clone(), state.enabled);
+    }
+
+    policies.enabled_skills =
+        skill_state.into_iter().filter_map(|(name, enabled)| enabled.then_some(name)).collect();
     policies
 }
 
@@ -388,21 +464,97 @@ fn load_governance_acp_agents(
         return Ok(crate::ACPAgentsConfig::default());
     }
 
-    let content = std::fs::read_to_string(&path)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ConfigLoaderError::io("governance acp agents", &path, error))?;
 
     // Parse as a map directly
-    let agents: HashMap<String, crate::ACPAgentConfig> =
-        serde_yaml::from_str(&content).map_err(|e| {
-            ConfigLoaderError::InvalidConfig(format!("Failed to parse ACP agents: {}", e))
-        })?;
+    let agents: HashMap<String, crate::ACPAgentConfig> = serde_yaml::from_str(&content)
+        .map_err(|error| ConfigLoaderError::parse("governance acp agents", &path, "yaml", error))?;
 
     Ok(crate::ACPAgentsConfig { agents })
+}
+
+fn load_extensions_config(
+    extensions_config_path: Option<&str>,
+) -> Result<Option<ExtensionsConfig>, ConfigLoaderError> {
+    let Some(path) = extensions_config_path else {
+        return Ok(None);
+    };
+
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    ExtensionsConfig::from_file(&path).map(Some)
+}
+
+fn validate_unified_config(config: &UnifiedConfig) -> Result<(), ConfigLoaderError> {
+    config.models.selected_kernel_model()?;
+
+    let mut model_names = HashSet::new();
+    for model in &config.models.entries {
+        if !model_names.insert(&model.name) {
+            return Err(ConfigLoaderError::validation(
+                "unified config",
+                None,
+                format!("Duplicate model name: {}", model.name),
+            ));
+        }
+    }
+
+    let mut tool_names = HashSet::new();
+    for tool in &config.tools.manifests {
+        if !tool_names.insert(&tool.name) {
+            return Err(ConfigLoaderError::validation(
+                "unified config",
+                None,
+                format!("Duplicate tool name: {}", tool.name),
+            ));
+        }
+    }
+
+    if config.policies.max_turns == 0 {
+        return Err(ConfigLoaderError::validation(
+            "unified config",
+            None,
+            "max_turns must be greater than 0",
+        ));
+    }
+
+    if config.subagents.max_concurrent == 0 {
+        return Err(ConfigLoaderError::validation(
+            "unified config",
+            None,
+            "max_concurrent subagents must be greater than 0",
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn app_config_ref(extensions_config_path: Option<String>) -> AppConfigRef {
+        AppConfigRef {
+            models: vec![ModelConfigRef {
+                name: "gpt-4".to_string(),
+                display_name: "GPT-4".to_string(),
+                use_provider: "langchain_openai:ChatOpenAI".to_string(),
+                model: "gpt-4".to_string(),
+                api_key: None,
+                max_tokens: None,
+                temperature: None,
+                base_url: None,
+                use_responses_api: None,
+                output_version: None,
+            }],
+            extensions_config_path,
+        }
+    }
 
     #[test]
     fn test_load_governance_models() {
@@ -519,5 +671,95 @@ test_agent:
         assert_eq!(codex.command, "codex-acp");
         assert_eq!(codex.args, vec!["--model", "gpt-4"]);
         assert!(codex.auto_approve_permissions);
+    }
+
+    #[test]
+    fn test_load_unified_config_applies_skill_precedence() {
+        let dir = tempdir().unwrap();
+        let governance_root = dir.path();
+        let skills_path = governance_root.join("skills.yaml");
+        let extensions_path = governance_root.join("extensions_config.json");
+
+        std::fs::write(
+            &skills_path,
+            r#"
+entries:
+  - name: browser
+    enabled: true
+  - name: search
+    enabled: true
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &extensions_path,
+            r#"{
+  "skills": {
+    "browser": { "enabled": false, "version": "1.0.0" },
+    "search": { "enabled": true, "version": "2.0.0" },
+    "review": { "enabled": true, "version": "1.1.0" }
+  },
+  "mcpServers": {}
+}"#,
+        )
+        .unwrap();
+
+        let result = load_unified_config(
+            &app_config_ref(Some(extensions_path.display().to_string())),
+            governance_root.to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(result.policies.enabled_skills, vec!["review", "search"]);
+    }
+
+    #[test]
+    fn test_load_unified_config_returns_parse_error_for_malformed_extensions_config() {
+        let dir = tempdir().unwrap();
+        let governance_root = dir.path();
+        let extensions_path = governance_root.join("extensions_config.json");
+
+        std::fs::write(&extensions_path, r#"{ "skills": { "broken": } }"#).unwrap();
+
+        let error = load_unified_config(
+            &app_config_ref(Some(extensions_path.display().to_string())),
+            governance_root.to_str().unwrap(),
+        )
+        .unwrap_err();
+
+        match error {
+            ConfigLoaderError::Parse { config_source, format, .. } => {
+                assert_eq!(config_source, "extensions config");
+                assert_eq!(format, "json");
+            }
+            other => panic!("expected parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_load_unified_config_returns_validation_error_for_unknown_default_model() {
+        let dir = tempdir().unwrap();
+        let governance_root = dir.path();
+        let models_path = governance_root.join("models.yaml");
+
+        std::fs::write(
+            &models_path,
+            r#"
+default_model: does-not-exist
+"#,
+        )
+        .unwrap();
+
+        let error = load_unified_config(&app_config_ref(None), governance_root.to_str().unwrap())
+            .unwrap_err();
+
+        match error {
+            ConfigLoaderError::Validation { config_source, message, .. } => {
+                assert_eq!(config_source, "unified config");
+                assert!(message.contains("default_model 'does-not-exist'"));
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
     }
 }
