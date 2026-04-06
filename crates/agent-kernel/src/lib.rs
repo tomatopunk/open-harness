@@ -17,10 +17,11 @@ mod lifecycle;
 pub use agent_loop::AgentLoop;
 pub use channel_manager::{Channel, ChannelManager, InboundMessage, OutboundMessage};
 pub use config::{
-    AgentLoopConfig, ChannelsConfig, DingtalkConfig, KernelConfig, MemoryConfig, StorageConfig,
+    AgentLoopConfig, ChannelsConfig, DingtalkConfig, KernelConfig, KernelConfigResolution,
+    KernelMigrationConfig, KernelRuntimeMode, MemoryConfig, ResolvedKernelConfig, StorageConfig,
     StorageMode,
 };
-pub use error::{KernelError, KernelResult};
+pub use error::{KernelError, KernelErrorCategory, KernelResult};
 pub use events::{Event, EventBus, EventHandler};
 pub use hooks::{HookFn, HookPhase, HookSystem};
 pub use kernel::AgentKernel;
