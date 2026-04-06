@@ -1,12 +1,9 @@
 use agent_kernel::{
-    AgentKernel, AgentLoop, AgentLoopConfig, AgentLoopState, HookPhase, HookSystem, KernelConfig,
-    KernelState,
+    AgentKernel, AgentLoopConfig, AgentLoopState, HookPhase, HookSystem, KernelConfig,
 };
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::tempdir;
 use tokio::sync::Mutex;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -79,9 +76,10 @@ async fn test_agent_loop_state_transitions_via_hooks() {
             HookPhase::AfterIteration,
             Box::new(move |state| {
                 let ic = ic.clone();
+                let iteration = state.iteration;
                 Box::pin(async move {
                     let mut count = ic.lock().await;
-                    *count = state.iteration;
+                    *count = iteration;
                     Ok(())
                 })
             }),
@@ -94,9 +92,10 @@ async fn test_agent_loop_state_transitions_via_hooks() {
             HookPhase::BeforeCompletion,
             Box::new(move |state| {
                 let ic = ic.clone();
+                let iteration = state.iteration;
                 Box::pin(async move {
-                    let count = ic.lock().await;
-                    assert!(state.iteration <= 5, "iteration should not exceed max");
+                    let _count = ic.lock().await;
+                    assert!(iteration <= 5, "iteration should not exceed max");
                     Ok(())
                 })
             }),
@@ -112,8 +111,6 @@ async fn test_kernel_lifecycle_integration_with_agent_loop() {
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
 
     let kernel = AgentKernel::new(kernel_config.clone());
-
-    let event_bus = kernel.event_bus();
 
     assert!(kernel.llm_provider().is_none());
     assert!(kernel.mcp_bridge().is_none());
@@ -224,8 +221,8 @@ async fn test_hook_clear_isolation() {
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
 
-    let kernel = AgentKernel::new(kernel_config.clone());
-    let mut hooks = HookSystem::new();
+    let _kernel = AgentKernel::new(kernel_config.clone());
+    let hooks = HookSystem::new();
 
     hooks
         .register_hook_async(HookPhase::BeforeLoop, Box::new(|_state| Box::pin(async { Ok(()) })))
@@ -269,8 +266,6 @@ async fn test_kernel_config_with_custom_agent_loop() {
         completion_promise: "END".to_string(),
         debounce_seconds: 1,
     };
-
-    let kernel = AgentKernel::new(config.clone());
 
     assert_eq!(config.agent_loop.max_iterations, 200);
     assert_eq!(config.agent_loop.completion_promise, "END");
