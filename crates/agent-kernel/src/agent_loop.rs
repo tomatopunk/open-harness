@@ -201,3 +201,201 @@ impl AgentLoop {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentLoopConfig;
+    use crate::events::EventBus;
+    use crate::hooks::HookSystem;
+    use std::sync::Arc;
+    use tokio::sync::OnceCell;
+    use uuid::Uuid;
+
+    fn test_config() -> AgentLoopConfig {
+        AgentLoopConfig {
+            enabled: true,
+            max_iterations: 10,
+            completion_promise: "DONE".to_string(),
+            debounce_seconds: 0,
+        }
+    }
+
+    #[test]
+    fn test_agent_loop_state_creation() {
+        let thread_id = Uuid::new_v4();
+        let prompt = "test prompt".to_string();
+        let config = test_config();
+
+        let state = AgentLoopState::new(thread_id, prompt.clone(), &config);
+
+        assert!(state.active);
+        assert_eq!(state.iteration, 0);
+        assert_eq!(state.max_iterations, 10);
+        assert_eq!(state.completion_promise, "DONE");
+        assert_eq!(state.prompt, prompt);
+        assert_eq!(state.thread_id, thread_id);
+        assert!(!state.ultrawork);
+        assert!(!state.verification_pending);
+    }
+
+    #[test]
+    fn test_agent_loop_state_detect_completion_with_exact_promise() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        assert!(state.detect_completion("some text DONE some text"));
+        assert!(!state.detect_completion("no promise here"));
+    }
+
+    #[test]
+    fn test_agent_loop_state_detect_completion_with_xml_promise() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        assert!(state.detect_completion("some text <promise>DONE</promise> some text"));
+    }
+
+    #[test]
+    fn test_agent_loop_state_increment_iteration() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let mut state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        assert_eq!(state.iteration, 0);
+        state.increment_iteration();
+        assert_eq!(state.iteration, 1);
+        state.increment_iteration();
+        assert_eq!(state.iteration, 2);
+    }
+
+    #[test]
+    fn test_agent_loop_state_should_stop_before_max() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let mut state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        assert!(!state.should_stop());
+        state.iteration = 5;
+        assert!(!state.should_stop());
+    }
+
+    #[test]
+    fn test_agent_loop_state_should_stop_at_max() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let mut state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        state.iteration = 10;
+        assert!(state.should_stop());
+    }
+
+    #[test]
+    fn test_agent_loop_state_should_stop_when_inactive() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let mut state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        state.active = false;
+        assert!(state.should_stop());
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_creation() {
+        let config = test_config();
+        let hooks = Arc::new(HookSystem::new());
+        let event_bus = Arc::new(EventBus::new());
+        let llm_provider = Arc::new(OnceCell::new());
+
+        let agent_loop = AgentLoop::new(config, hooks, event_bus, llm_provider);
+
+        let state = agent_loop.current_state().await;
+        assert!(!state.active);
+        assert_eq!(state.iteration, 0);
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_start_and_stop() {
+        let config = test_config();
+        let hooks = Arc::new(HookSystem::new());
+        let event_bus = Arc::new(EventBus::new());
+        let llm_provider = Arc::new(OnceCell::new());
+
+        let agent_loop = AgentLoop::new(config, hooks, event_bus, llm_provider);
+        let thread_id = Uuid::new_v4();
+
+        assert!(!(agent_loop.is_active().await));
+
+        let _ = agent_loop.start_loop(thread_id, "test prompt".to_string()).await;
+
+        let state = agent_loop.current_state().await;
+        assert_eq!(state.prompt, "test prompt");
+        assert_eq!(state.thread_id, thread_id);
+
+        let _ = agent_loop.stop_loop().await;
+        assert!(!(agent_loop.is_active().await));
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_current_state() {
+        let config = test_config();
+        let hooks = Arc::new(HookSystem::new());
+        let event_bus = Arc::new(EventBus::new());
+        let llm_provider = Arc::new(OnceCell::new());
+
+        let agent_loop = AgentLoop::new(config, hooks, event_bus, llm_provider);
+
+        let state = agent_loop.current_state().await;
+        assert!(!state.active);
+        assert_eq!(state.iteration, 0);
+    }
+
+    #[tokio::test]
+    async fn test_agent_loop_is_active() {
+        let config = test_config();
+        let hooks = Arc::new(HookSystem::new());
+        let event_bus = Arc::new(EventBus::new());
+        let llm_provider = Arc::new(OnceCell::new());
+
+        let agent_loop = AgentLoop::new(config, hooks, event_bus, llm_provider);
+
+        assert!(!(agent_loop.is_active().await));
+    }
+
+    #[test]
+    fn test_agent_loop_config_defaults() {
+        let config = AgentLoopConfig::default();
+
+        assert!(config.enabled);
+        assert_eq!(config.max_iterations, 100);
+        assert_eq!(config.completion_promise, "DONE");
+        assert_eq!(config.debounce_seconds, 30);
+    }
+
+    #[test]
+    fn test_agent_loop_state_with_custom_completion_promise() {
+        let thread_id = Uuid::new_v4();
+        let mut config = test_config();
+        config.completion_promise = "FINISHED".to_string();
+
+        let state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        assert!(state.detect_completion("task is FINISHED"));
+        assert!(!state.detect_completion("task is DONE"));
+    }
+
+    #[test]
+    fn test_agent_loop_state_with_ultrawork_mode() {
+        let thread_id = Uuid::new_v4();
+        let config = test_config();
+        let mut state = AgentLoopState::new(thread_id, "test".to_string(), &config);
+
+        state.ultrawork = true;
+        state.verification_pending = true;
+
+        assert!(state.ultrawork);
+        assert!(state.verification_pending);
+    }
+}
