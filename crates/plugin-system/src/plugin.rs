@@ -5,6 +5,32 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// 插件生命周期阶段
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginLifecycleStage {
+    Discovery,
+    Load,
+    Initialize,
+    Start,
+    Stop,
+    Unload,
+}
+
+impl std::fmt::Display for PluginLifecycleStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stage = match self {
+            Self::Discovery => "discovery",
+            Self::Load => "load",
+            Self::Initialize => "initialize",
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Unload => "unload",
+        };
+
+        write!(f, "{}", stage)
+    }
+}
+
 /// 插件状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginState {
@@ -23,6 +49,7 @@ pub enum PluginState {
 }
 
 /// 插件上下文
+#[derive(Clone)]
 pub struct PluginContext {
     /// 工作目录
     pub workspace_dir: std::path::PathBuf,
@@ -40,6 +67,14 @@ impl PluginContext {
             workspace_dir,
             config: None,
             shared_state: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_config(&self, config: Option<Value>) -> Self {
+        Self {
+            workspace_dir: self.workspace_dir.clone(),
+            config,
+            shared_state: Arc::clone(&self.shared_state),
         }
     }
 

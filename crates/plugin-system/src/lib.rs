@@ -7,7 +7,7 @@ mod manager;
 mod manifest;
 mod plugin;
 
-pub use error::{PluginError, PluginResult};
-pub use manager::PluginManager;
+pub use error::{PluginError, PluginErrorCategory, PluginResult};
+pub use manager::{PluginManager, PluginStatus};
 pub use manifest::PluginManifest;
-pub use plugin::{BasePlugin, Plugin, PluginContext, PluginState};
+pub use plugin::{BasePlugin, Plugin, PluginContext, PluginLifecycleStage, PluginState};
