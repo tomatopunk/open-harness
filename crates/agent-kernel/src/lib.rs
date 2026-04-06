@@ -17,7 +17,7 @@ mod security;
 mod state_machine;
 mod streaming_runtime;
 
-pub use agent_loop::AgentLoop;
+pub use agent_loop::{AgentLoop, AgentLoopState};
 pub use channel_manager::{Channel, ChannelManager, InboundMessage, OutboundMessage};
 pub use config::{
     AgentLoopConfig, ChannelsConfig, DingtalkConfig, KernelConfig, KernelConfigResolution,

@@ -329,7 +329,9 @@ mod tests {
         ToolCallSpec, ToolProviderType, ToolResultMetadata, ToolRuntimeEvent,
     };
     use serde_json::json;
-    use state_abstraction::{LocalFsStateStore, SandboxExecutionStore};
+    use state_abstraction::{
+        memory_document::FactCategory, LocalFsStateStore, MemoryDocument, SandboxExecutionStore,
+    };
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -743,5 +745,114 @@ mod tests {
         assert!(security
             .policy_reason
             .contains("session policy requested restricted process sandbox"));
+    }
+
+    #[tokio::test]
+    async fn session_runtime_security_and_memory_chain_stays_coherent() {
+        let kernel = test_kernel("engine-certification-chain");
+        kernel.initialize().await.unwrap();
+        kernel.start().await.unwrap();
+
+        let seen_requests = Arc::new(Mutex::new(Vec::new()));
+        kernel
+            .register_tool_adapter(Arc::new(FileToolAdapter::new(
+                "file",
+                Arc::new(RecordingExecutor {
+                    payload_label: "file",
+                    should_fail: false,
+                    seen_requests: seen_requests.clone(),
+                }),
+            )))
+            .await;
+
+        let thread_id = Uuid::new_v4();
+        let mut context = SessionContext::new();
+        context.insert("channel", json!("gateway"));
+        context.insert("request_id", json!("cert-001"));
+
+        let mut policy = SessionPolicy::new();
+        policy.insert("sandbox", json!("restricted"));
+        policy.insert("mode", json!("safe"));
+
+        let session = kernel
+            .create_session(CreateSessionRequest {
+                attached_thread_id: Some(thread_id),
+                context: context.clone(),
+                policy,
+            })
+            .await
+            .unwrap();
+
+        let request = ToolRuntimeRequest {
+            thread_id: ThreadId(thread_id),
+            ..runtime_request(
+                session.session_id,
+                ToolAdapterKind::File,
+                ToolProviderType::Local,
+                "file",
+                json!({"path": "docs/SECURITY_EVOLUTION.md"}),
+            )
+        };
+
+        let events =
+            collect_events(kernel.execute_tool_runtime(request.clone()).await.unwrap()).await;
+
+        assert!(
+            matches!(&events[0], ToolRuntimeEvent::Request { request } if request.session_id == session.session_id)
+        );
+        assert!(matches!(&events[1], ToolRuntimeEvent::StreamChunk { .. }));
+        assert!(matches!(&events[2], ToolRuntimeEvent::Finalize { result, .. } if result.success));
+        assert_eq!(kernel.current_state().await, KernelState::Running);
+
+        let attached = kernel.attach_session(session.session_id).await.unwrap();
+        assert_eq!(attached.context, context);
+        assert_eq!(attached.attached_thread_id, Some(thread_id));
+
+        let seen = seen_requests.lock().await;
+        assert_eq!(seen.len(), 1);
+        let security = seen[0].security.as_ref().unwrap();
+        assert_eq!(security.policy_action, ExecutionPolicyAction::Allow);
+        assert_eq!(security.sandbox_profile, ProcessSandboxProfile::Restricted);
+        assert!(security
+            .policy_reason
+            .contains("session policy requested restricted process sandbox"));
+        drop(seen);
+
+        let audits = audit_store(&kernel).list_executions(thread_id).await.unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].session_id, session.session_id);
+        assert_eq!(audits[0].policy_action, ExecutionPolicyAction::Allow);
+        assert_eq!(audits[0].outcome, "finalized");
+
+        let memory_system = kernel.memory_system().expect("memory system should initialize");
+        let mut memory = MemoryDocument::default();
+        memory.add_fact(
+            state_abstraction::Fact::new(
+                "gateway certification request cert-001 completed a restricted file-tool run"
+                    .to_string(),
+                FactCategory::Context,
+                0.98,
+                thread_id.to_string(),
+            )
+            .with_mandatory(true),
+        );
+        memory_system.save_memory(thread_id, &memory).await.unwrap();
+
+        let stored_memory = memory_system.load_memory(thread_id).await.unwrap();
+        assert_eq!(stored_memory.facts.len(), 1);
+        assert!(stored_memory.has_any_content());
+        assert_eq!(stored_memory.segmented_context.recent.facts.len(), 1);
+
+        let retrieved = memory_system
+            .retrieve_relevant_context(thread_id, "which gateway request completed certification")
+            .await
+            .unwrap();
+        assert!(retrieved.recent_facts.iter().any(|fact| fact.content.contains("cert-001")));
+        let injected = memory_system.inject_to_prompt_with_query(
+            "System prompt",
+            &stored_memory,
+            "which gateway request completed certification",
+        );
+        assert!(injected.contains("cert-001"));
     }
 }
