@@ -43,8 +43,7 @@ Rules:
 
 - Introduce the new policy behind an explicit version, flag, or governance setting.
 - Document migration guidance before enabling the stricter mode by default.
-- Keep a rollback-safe compatibility path for at least one minor cycle.
-- Add or update E2E certification scenarios proving both legacy-compatible and hardened paths.
+- Add or update E2E certification scenarios proving the staged path and the default hardened path.
 
 Examples:
 
@@ -73,7 +72,7 @@ All substantive hardening changes should move through these stages:
 2. **Warn** - surface reasons and candidate policy decisions without blocking.
 3. **Constrain** - enable stricter behavior behind opt-in policy or version gates.
 4. **Enforce** - promote the hardened behavior to the default.
-5. **Retire** - remove the old compatibility path only after certified adoption.
+5. **Retire** - remove transitional paths once certified adoption is complete.
 
 Do not skip directly from observe to enforce unless the issue is an active critical vulnerability.
 
