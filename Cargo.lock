@@ -26,6 +26,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "unified-config",
  "uuid",
 ]
 
