@@ -54,8 +54,9 @@ pub use schema::{
 };
 pub use state_effect::{apply_state_effects, tool_round_from_calls, StateEffect};
 pub use streaming_runtime::{
-    StreamingToolAdapter, StreamingToolRuntime, ToolAdapterKind, ToolRuntimeChunkSink,
-    ToolRuntimeEvent, ToolRuntimeRequest, ToolStreamChunk,
+    BashCommandClassification, BashCommandRisk, ExecutionPolicyAction, ProcessSandboxProfile,
+    StreamingToolAdapter, StreamingToolRuntime, ToolAdapterKind, ToolExecutionSecurityContext,
+    ToolRuntimeChunkSink, ToolRuntimeEvent, ToolRuntimeRequest, ToolStreamChunk,
 };
 pub use task::{TaskEnvelope, TaskKind};
 pub use task_decomposer::{

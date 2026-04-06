@@ -22,6 +22,43 @@ pub enum ToolAdapterKind {
     Web,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPolicyAction {
+    Allow,
+    Downgrade,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessSandboxProfile {
+    Standard,
+    Restricted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BashCommandRisk {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BashCommandClassification {
+    pub risk: BashCommandRisk,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExecutionSecurityContext {
+    pub policy_action: ExecutionPolicyAction,
+    pub policy_reason: String,
+    pub sandbox_profile: ProcessSandboxProfile,
+    pub bash_classification: Option<BashCommandClassification>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolRuntimeRequest {
     pub session_id: Uuid,
@@ -31,6 +68,7 @@ pub struct ToolRuntimeRequest {
     pub provider_type: ToolProviderType,
     pub provider_name: String,
     pub call: ToolCallSpec,
+    pub security: Option<ToolExecutionSecurityContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,6 +272,7 @@ mod tests {
                 args: json!({"path": "README.md"}),
                 call_id: format!("call-{provider_name}"),
             },
+            security: None,
         }
     }
 
