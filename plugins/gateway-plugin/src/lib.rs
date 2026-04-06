@@ -6,7 +6,9 @@ mod api;
 mod error;
 
 use async_trait::async_trait;
-use plugin_system::{BasePlugin, Plugin, PluginContext, PluginManifest, PluginResult, PluginState};
+use plugin_system::{
+    BasePlugin, Plugin, PluginContext, PluginError, PluginManifest, PluginResult, PluginState,
+};
 use tokio::sync::RwLock;
 
 pub use error::GatewayPluginError;
@@ -68,11 +70,14 @@ impl Plugin for GatewayPlugin {
     async fn load(&mut self, ctx: &PluginContext) -> PluginResult<()> {
         tracing::info!("Loading Gateway plugin...");
 
-        // 从上下文中加载配置
         if let Some(config) = &ctx.config {
-            if let Ok(parsed) = serde_json::from_value::<GatewayPluginConfig>(config.clone()) {
-                self.config = parsed;
-            }
+            self.config =
+                serde_json::from_value::<GatewayPluginConfig>(config.clone()).map_err(|error| {
+                    PluginError::InvalidConfiguration {
+                        plugin: self.manifest().name.clone(),
+                        details: error.to_string(),
+                    }
+                })?;
         }
 
         self.base.load(ctx).await
@@ -86,12 +91,15 @@ impl Plugin for GatewayPlugin {
     async fn start(&mut self, ctx: &PluginContext) -> PluginResult<()> {
         tracing::info!("Starting Gateway plugin on {}...", self.config.bind);
 
-        // 启动 HTTP 服务器
         let app = api::create_router();
-        let bind = self.config.bind.clone();
+        let listener = tokio::net::TcpListener::bind(&self.config.bind).await.map_err(|error| {
+            PluginError::InitializationFailed(format!(
+                "failed to bind gateway listener on {}: {}",
+                self.config.bind, error
+            ))
+        })?;
 
         let handle = tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(bind).await.unwrap();
             if let Err(e) = axum::serve(listener, app).await {
                 tracing::error!("Gateway server error: {}", e);
             }
@@ -104,7 +112,6 @@ impl Plugin for GatewayPlugin {
     async fn stop(&mut self, ctx: &PluginContext) -> PluginResult<()> {
         tracing::info!("Stopping Gateway plugin...");
 
-        // 停止 HTTP 服务器
         if let Some(handle) = self.server_handle.write().await.take() {
             handle.abort();
         }
