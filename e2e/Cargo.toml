@@ -58,4 +58,9 @@ name = "agent_loop_deep"
 path = "src/tests/agent_loop_deep.rs"
 harness = true
 
+[[test]]
+name = "engine_certification"
+path = "src/tests/engine_certification.rs"
+harness = true
+
 [workspace]

@@ -23,6 +23,7 @@ cargo test --manifest-path e2e/Cargo.toml --tests
 - `gateway` - 网关相关测试
 - `mcp` - MCP 桥接测试
 - `agent_loop` - Agent 循环测试
+- `engine_certification` - 引擎总验收（session → FSM → runtime → security → memory）
 
 ### 运行单个测试
 
@@ -35,6 +36,9 @@ cargo test --manifest-path e2e/Cargo.toml mcp
 
 # 运行 agent_loop 测试
 cargo test --manifest-path e2e/Cargo.toml agent_loop
+
+# 运行引擎总验收测试
+cargo test --manifest-path e2e/Cargo.toml engine_certification
 ```
 
 ## 目录结构
