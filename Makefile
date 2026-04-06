@@ -1,4 +1,4 @@
-.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build dev create-local-fs smoke acceptance docker-up docker-down clean
+.PHONY: help fmt fmt-check lint test doc-check command-ir-guard pre-commit check build dev create-local-fs smoke acceptance docker-up docker-down clean e2e
 
 help:
 	@echo "open-harness common commands"
@@ -12,7 +12,8 @@ help:
 	@echo "  make command-ir-guard - ensure Command IR single entry in runtime"
 	@echo "  make lint             - run clippy with warnings as errors"
 	@echo "  make test             - run workspace tests"
-	@echo "  make check            - run fmt-check + lint + test"
+	@echo "  make e2e              - run end-to-end tests"
+	@echo "  make check            - run fmt-check + lint + test + e2e"
 	@echo "  make build            - build workspace"
 	@echo "  make smoke            - run curl smoke script"
 	@echo "  make acceptance       - run acceptance script"
@@ -34,7 +35,10 @@ test:
 
 pre-commit: fmt-check lint test command-ir-guard
 
-check: fmt-check lint test command-ir-guard
+e2e:
+	cargo test --manifest-path e2e/Cargo.toml --tests
+
+check: fmt-check lint test e2e command-ir-guard
 
 build:
 	cargo build --workspace --all-targets

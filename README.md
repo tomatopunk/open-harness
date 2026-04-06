@@ -22,12 +22,18 @@ open-harness/
 │   ├── plugin-system/       # 插件系统
 │   ├── llm-providers/       # 通用 LLM provider 抽象
 │   ├── mcp-bridge/          # 增强的 MCP 桥接
-│   ├── agent-ports/         # 端口抽象（保留用于兼容性）
-│   ├── state-abstraction/   # 状态抽象（保留用于兼容性）
-│   └── mcp-client/          # MCP 客户端（保留用于兼容性）
-└── plugins/                  # 插件目录
-    ├── gateway-plugin/       # API 网关插件（OpenAI 兼容 API）
-    └── manage-plugin/        # 管理插件
+│   ├── agent-ports/         # 端口抽象
+│   ├── state-abstraction/   # 状态抽象
+│   ├── mcp-client/          # MCP 客户端
+│   ├── ecosystem-registry/  # 生态系统注册
+│   ├── package-manager/     # 包管理器
+│   ├── unified-config/      # 统一配置
+│   └── runtime-langgraph-adapter/ # LangGraph 运行时适配器
+├── plugins/                  # 插件目录
+├── skills/                   # 技能目录（MCP 服务器格式）
+├── e2e/                      # 端到端测试
+├── docs/                     # 文档
+└── scripts/                  # 脚本工具
 ```
 
 ## 快速开始
@@ -42,8 +48,27 @@ cargo run -p open-harness-kernel
 # 运行测试
 cargo test --workspace
 
+# 运行端到端测试
+make e2e
+
 # 运行 lint
 cargo clippy --workspace -- -D warnings
+```
+
+## 常用命令
+
+```bash
+# 开发模式
+make dev
+
+# 代码格式化
+make fmt
+
+# 完整检查（格式化 + lint + 测试 + e2e）
+make check
+
+# 预提交检查
+make pre-commit
 ```
 
 ## 核心设计原则
