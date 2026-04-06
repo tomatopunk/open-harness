@@ -110,10 +110,8 @@ impl AgentLoop {
         *state = AgentLoopState::new(thread_id, prompt, &self.config);
         drop(state);
 
-        // Run before loop hooks
-        let state_guard = self.state.read().await;
-        self.hooks.run_hooks(HookPhase::BeforeLoop, &state_guard).await?;
-        drop(state_guard);
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::BeforeLoop, &state_snapshot).await?;
 
         // Start the main loop
         self.run_loop().await?;
@@ -123,11 +121,13 @@ impl AgentLoop {
 
     /// Stop the current loop.
     pub async fn stop_loop(&self) -> Result<()> {
-        let mut state = self.state.write().await;
-        state.active = false;
+        {
+            let mut state = self.state.write().await;
+            state.active = false;
+        }
 
-        let state_guard = self.state.read().await;
-        self.hooks.run_hooks(HookPhase::AfterCompletion, &state_guard).await?;
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::AfterCompletion, &state_snapshot).await?;
 
         Ok(())
     }
@@ -160,43 +160,32 @@ impl AgentLoop {
 
     /// Run a single iteration.
     async fn run_iteration(&self) -> Result<bool> {
-        // Before iteration hooks
-        let state_guard = self.state.read().await;
-        self.hooks.run_hooks(HookPhase::BeforeIteration, &state_guard).await?;
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::BeforeIteration, &state_snapshot).await?;
 
-        // Check if we should stop
-        if state_guard.should_stop() {
+        if state_snapshot.should_stop() {
             self.stop_loop().await?;
             return Ok(false);
         }
-        drop(state_guard);
 
-        // Increment iteration
         {
             let mut state = self.state.write().await;
             state.increment_iteration();
         }
 
-        // After iteration hooks (the actual work happens in hooks)
-        let state_guard = self.state.read().await;
-        self.hooks.run_hooks(HookPhase::AfterIteration, &state_guard).await?;
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::AfterIteration, &state_snapshot).await?;
 
-        // Check for completion
-        {
-            let _state = self.state.read().await;
-            // Completion detection would happen here after getting transcript
-            // For now, we leave it to the hooks to detect and stop
-        }
-
-        self.hooks.run_hooks(HookPhase::BeforeCompletion, &state_guard).await?;
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::BeforeCompletion, &state_snapshot).await?;
 
         Ok(true)
     }
 
     /// Called when completion is detected.
     pub async fn on_completion_detected(&self) -> Result<()> {
-        let state_guard = self.state.read().await;
-        self.hooks.run_hooks(HookPhase::OnCompletionDetected, &state_guard).await?;
+        let state_snapshot = self.state.read().await.clone();
+        self.hooks.run_hooks(HookPhase::OnCompletionDetected, &state_snapshot).await?;
         self.stop_loop().await?;
         Ok(())
     }

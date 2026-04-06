@@ -42,9 +42,13 @@ impl HookSystem {
     }
 
     /// Register a hook for a specific phase.
+    pub async fn register_hook_async(&self, phase: HookPhase, hook: HookFn) {
+        let mut hooks = self.hooks.write().await;
+        hooks.entry(phase).or_default().push(hook);
+    }
+
     pub fn register_hook(&self, phase: HookPhase, hook: HookFn) {
-        let mut hooks =
-            tokio::runtime::Handle::current().block_on(async { self.hooks.write().await });
+        let mut hooks = self.hooks.blocking_write();
         hooks.entry(phase).or_default().push(hook);
     }
 
@@ -62,9 +66,13 @@ impl HookSystem {
     }
 
     /// Clear all hooks.
+    pub async fn clear_hooks_async(&self) {
+        let mut hooks = self.hooks.write().await;
+        hooks.clear();
+    }
+
     pub fn clear_hooks(&mut self) {
-        let mut hooks =
-            tokio::runtime::Handle::current().block_on(async { self.hooks.write().await });
+        let mut hooks = self.hooks.blocking_write();
         hooks.clear();
     }
 
@@ -113,17 +121,19 @@ mod tests {
         let called = Arc::new(Mutex::new(false));
         let called_clone = called.clone();
 
-        hooks.register_hook(
-            HookPhase::BeforeLoop,
-            Box::new(move |_state| {
-                let called = called_clone.clone();
-                Box::pin(async move {
-                    let mut c = called.lock().await;
-                    *c = true;
-                    Ok(())
-                })
-            }),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeLoop,
+                Box::new(move |_state| {
+                    let called = called_clone.clone();
+                    Box::pin(async move {
+                        let mut c = called.lock().await;
+                        *c = true;
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
 
         let state = test_state();
         hooks.run_hooks(HookPhase::BeforeLoop, &state).await.unwrap();
@@ -138,17 +148,19 @@ mod tests {
 
         for _ in 0..3 {
             let call_count = call_count.clone();
-            hooks.register_hook(
-                HookPhase::BeforeIteration,
-                Box::new(move |_state| {
-                    let call_count = call_count.clone();
-                    Box::pin(async move {
-                        let mut count = call_count.lock().await;
-                        *count += 1;
-                        Ok(())
-                    })
-                }),
-            );
+            hooks
+                .register_hook_async(
+                    HookPhase::BeforeIteration,
+                    Box::new(move |_state| {
+                        let call_count = call_count.clone();
+                        Box::pin(async move {
+                            let mut count = call_count.lock().await;
+                            *count += 1;
+                            Ok(())
+                        })
+                    }),
+                )
+                .await;
         }
 
         let state = test_state();
@@ -164,30 +176,34 @@ mod tests {
         let after_loop_called = Arc::new(Mutex::new(false));
 
         let blc = before_loop_called.clone();
-        hooks.register_hook(
-            HookPhase::BeforeLoop,
-            Box::new(move |_state| {
-                let blc = blc.clone();
-                Box::pin(async move {
-                    let mut c = blc.lock().await;
-                    *c = true;
-                    Ok(())
-                })
-            }),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeLoop,
+                Box::new(move |_state| {
+                    let blc = blc.clone();
+                    Box::pin(async move {
+                        let mut c = blc.lock().await;
+                        *c = true;
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
 
         let alc = after_loop_called.clone();
-        hooks.register_hook(
-            HookPhase::AfterCompletion,
-            Box::new(move |_state| {
-                let alc = alc.clone();
-                Box::pin(async move {
-                    let mut c = alc.lock().await;
-                    *c = true;
-                    Ok(())
-                })
-            }),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::AfterCompletion,
+                Box::new(move |_state| {
+                    let alc = alc.clone();
+                    Box::pin(async move {
+                        let mut c = alc.lock().await;
+                        *c = true;
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
 
         let state = test_state();
         hooks.run_hooks(HookPhase::BeforeLoop, &state).await.unwrap();
@@ -202,33 +218,49 @@ mod tests {
 
         assert_eq!(hooks.hook_count().await, 0);
 
-        hooks.register_hook(HookPhase::BeforeLoop, Box::new(|_state| Box::pin(async { Ok(()) })));
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeLoop,
+                Box::new(|_state| Box::pin(async { Ok(()) })),
+            )
+            .await;
         assert_eq!(hooks.hook_count().await, 1);
 
-        hooks.register_hook(
-            HookPhase::BeforeIteration,
-            Box::new(|_state| Box::pin(async { Ok(()) })),
-        );
-        hooks.register_hook(
-            HookPhase::AfterIteration,
-            Box::new(|_state| Box::pin(async { Ok(()) })),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeIteration,
+                Box::new(|_state| Box::pin(async { Ok(()) })),
+            )
+            .await;
+        hooks
+            .register_hook_async(
+                HookPhase::AfterIteration,
+                Box::new(|_state| Box::pin(async { Ok(()) })),
+            )
+            .await;
         assert_eq!(hooks.hook_count().await, 3);
     }
 
     #[tokio::test]
     async fn test_clear_hooks() {
-        let mut hooks = HookSystem::new();
+        let hooks = HookSystem::new();
 
-        hooks.register_hook(HookPhase::BeforeLoop, Box::new(|_state| Box::pin(async { Ok(()) })));
-        hooks.register_hook(
-            HookPhase::AfterCompletion,
-            Box::new(|_state| Box::pin(async { Ok(()) })),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeLoop,
+                Box::new(|_state| Box::pin(async { Ok(()) })),
+            )
+            .await;
+        hooks
+            .register_hook_async(
+                HookPhase::AfterCompletion,
+                Box::new(|_state| Box::pin(async { Ok(()) })),
+            )
+            .await;
 
         assert_eq!(hooks.hook_count().await, 2);
 
-        hooks.clear_hooks();
+        hooks.clear_hooks_async().await;
 
         assert_eq!(hooks.hook_count().await, 0);
     }
@@ -239,18 +271,20 @@ mod tests {
         let received_iteration = Arc::new(Mutex::new(0));
 
         let ri = received_iteration.clone();
-        hooks.register_hook(
-            HookPhase::BeforeIteration,
-            Box::new(move |state| {
-                let ri = ri.clone();
-                let iteration = state.iteration;
-                Box::pin(async move {
-                    let mut r = ri.lock().await;
-                    *r = iteration;
-                    Ok(())
-                })
-            }),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeIteration,
+                Box::new(move |state| {
+                    let ri = ri.clone();
+                    let iteration = state.iteration;
+                    Box::pin(async move {
+                        let mut r = ri.lock().await;
+                        *r = iteration;
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
 
         let thread_id = Uuid::new_v4();
         let config = AgentLoopConfig::default();
@@ -278,17 +312,19 @@ mod tests {
 
         for &phase in &phases {
             let phases_called = phases_called.clone();
-            hooks.register_hook(
-                phase,
-                Box::new(move |_state| {
-                    let phases_called = phases_called.clone();
-                    Box::pin(async move {
-                        let mut p = phases_called.lock().await;
-                        p.push(phase);
-                        Ok(())
-                    })
-                }),
-            );
+            hooks
+                .register_hook_async(
+                    phase,
+                    Box::new(move |_state| {
+                        let phases_called = phases_called.clone();
+                        Box::pin(async move {
+                            let mut p = phases_called.lock().await;
+                            p.push(phase);
+                            Ok(())
+                        })
+                    }),
+                )
+                .await;
         }
 
         let state = test_state();
@@ -305,10 +341,12 @@ mod tests {
     async fn test_hook_error_propagation() {
         let hooks = HookSystem::new();
 
-        hooks.register_hook(
-            HookPhase::BeforeLoop,
-            Box::new(|_state| Box::pin(async { Err(anyhow::anyhow!("hook failed")) })),
-        );
+        hooks
+            .register_hook_async(
+                HookPhase::BeforeLoop,
+                Box::new(|_state| Box::pin(async { Err(anyhow::anyhow!("hook failed")) })),
+            )
+            .await;
 
         let state = test_state();
         let result = hooks.run_hooks(HookPhase::BeforeLoop, &state).await;

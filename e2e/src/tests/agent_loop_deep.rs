@@ -37,17 +37,19 @@ async fn test_complete_agent_loop_hook_chain() {
 
     for &phase in &phases_to_track {
         let hook_phases = hook_phases.clone();
-        hooks.register_hook(
-            phase,
-            Box::new(move |_state| {
-                let hook_phases = hook_phases.clone();
-                Box::pin(async move {
-                    let mut phases = hook_phases.lock().await;
-                    phases.push(phase);
-                    Ok(())
-                })
-            }),
-        );
+        hooks
+            .register_hook_async(
+                phase,
+                Box::new(move |_state| {
+                    let hook_phases = hook_phases.clone();
+                    Box::pin(async move {
+                        let mut phases = hook_phases.lock().await;
+                        phases.push(phase);
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
     }
 
     assert_eq!(hooks.hook_count().await, 5);
@@ -72,30 +74,34 @@ async fn test_agent_loop_state_transitions_via_hooks() {
     let hooks = kernel.hooks();
 
     let ic = iteration_count.clone();
-    hooks.register_hook(
-        HookPhase::AfterIteration,
-        Box::new(move |state| {
-            let ic = ic.clone();
-            Box::pin(async move {
-                let mut count = ic.lock().await;
-                *count = state.iteration;
-                Ok(())
-            })
-        }),
-    );
+    hooks
+        .register_hook_async(
+            HookPhase::AfterIteration,
+            Box::new(move |state| {
+                let ic = ic.clone();
+                Box::pin(async move {
+                    let mut count = ic.lock().await;
+                    *count = state.iteration;
+                    Ok(())
+                })
+            }),
+        )
+        .await;
 
     let ic = iteration_count.clone();
-    hooks.register_hook(
-        HookPhase::BeforeCompletion,
-        Box::new(move |state| {
-            let ic = ic.clone();
-            Box::pin(async move {
-                let count = ic.lock().await;
-                assert!(state.iteration <= 5, "iteration should not exceed max");
-                Ok(())
-            })
-        }),
-    );
+    hooks
+        .register_hook_async(
+            HookPhase::BeforeCompletion,
+            Box::new(move |state| {
+                let ic = ic.clone();
+                Box::pin(async move {
+                    let count = ic.lock().await;
+                    assert!(state.iteration <= 5, "iteration should not exceed max");
+                    Ok(())
+                })
+            }),
+        )
+        .await;
 }
 
 #[tokio::test]
@@ -129,30 +135,36 @@ async fn test_hook_system_with_multiple_kernels() {
     let hook_count2 = Arc::new(Mutex::new(0));
 
     let hc1 = hook_count1.clone();
-    kernel1.hooks().register_hook(
-        HookPhase::BeforeLoop,
-        Box::new(move |_state| {
-            let hc1 = hc1.clone();
-            Box::pin(async move {
-                let mut count = hc1.lock().await;
-                *count += 1;
-                Ok(())
-            })
-        }),
-    );
+    kernel1
+        .hooks()
+        .register_hook_async(
+            HookPhase::BeforeLoop,
+            Box::new(move |_state| {
+                let hc1 = hc1.clone();
+                Box::pin(async move {
+                    let mut count = hc1.lock().await;
+                    *count += 1;
+                    Ok(())
+                })
+            }),
+        )
+        .await;
 
     let hc2 = hook_count2.clone();
-    kernel2.hooks().register_hook(
-        HookPhase::BeforeLoop,
-        Box::new(move |_state| {
-            let hc2 = hc2.clone();
-            Box::pin(async move {
-                let mut count = hc2.lock().await;
-                *count += 1;
-                Ok(())
-            })
-        }),
-    );
+    kernel2
+        .hooks()
+        .register_hook_async(
+            HookPhase::BeforeLoop,
+            Box::new(move |_state| {
+                let hc2 = hc2.clone();
+                Box::pin(async move {
+                    let mut count = hc2.lock().await;
+                    *count += 1;
+                    Ok(())
+                })
+            }),
+        )
+        .await;
 
     assert_eq!(kernel1.hooks().hook_count().await, 1);
     assert_eq!(kernel2.hooks().hook_count().await, 1);
@@ -215,12 +227,19 @@ async fn test_hook_clear_isolation() {
     let kernel = AgentKernel::new(kernel_config.clone());
     let mut hooks = HookSystem::new();
 
-    hooks.register_hook(HookPhase::BeforeLoop, Box::new(|_state| Box::pin(async { Ok(()) })));
-    hooks.register_hook(HookPhase::AfterIteration, Box::new(|_state| Box::pin(async { Ok(()) })));
+    hooks
+        .register_hook_async(HookPhase::BeforeLoop, Box::new(|_state| Box::pin(async { Ok(()) })))
+        .await;
+    hooks
+        .register_hook_async(
+            HookPhase::AfterIteration,
+            Box::new(|_state| Box::pin(async { Ok(()) })),
+        )
+        .await;
 
     assert_eq!(hooks.hook_count().await, 2);
 
-    hooks.clear_hooks();
+    hooks.clear_hooks_async().await;
 
     assert_eq!(hooks.hook_count().await, 0);
 }
