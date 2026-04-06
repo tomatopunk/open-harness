@@ -25,12 +25,15 @@
 
 ### E2E 测试现状
 
-当前 e2e 测试仅包含 3 个测试，每个测试只是运行单个单元测试：
-- `gateway.rs` - 运行 2 个 agent-kernel 测试
-- `mcp.rs` - 运行 1 个 mcp-bridge 测试
-- `agent_loop.rs` - 运行 2 个配置测试
+当前 e2e 测试采用 acceptance wrapper 风格：通过 `e2e/src/tests/*.rs` 将跨 crate 的关键回归场景绑定到独立 CI 门禁。
 
-**问题**：缺少真正的端到端集成测试。
+当前核心 acceptance 覆盖包括：
+- `gateway.rs` - 生命周期阶段顺序与插件失败上下文
+- `mcp.rs` - MCP 重连与工具缓存失效回归
+- `agent_loop.rs` - 配置优先级与缺失内存后端回归
+- `engine_certification.rs` - session → FSM → runtime → security → memory 闭环认证
+
+**当前重点**：继续保持 wrapper 风格，但确保每个发布关键链路至少有一条完整认证场景，而不是只看单模块测试。
 
 ## 测试策略
 
