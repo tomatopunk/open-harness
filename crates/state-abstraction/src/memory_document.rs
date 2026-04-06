@@ -157,7 +157,7 @@ pub struct MemoryMetadata {
     pub merge_count: u64,
 }
 
-/// Deer-flow–style structured memory: facts list plus optional JSON blobs for user profile and history.
+/// structured memory: facts list plus optional JSON blobs for user profile and history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryDocument {
     pub schema_version: u32,
