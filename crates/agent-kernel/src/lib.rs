@@ -27,3 +27,7 @@ pub use hooks::{HookFn, HookPhase, HookSystem};
 pub use kernel::AgentKernel;
 pub use lifecycle::LifecycleHook;
 pub use llm_providers::{ProviderConfig, ProviderType};
+pub use state_abstraction::{
+    CreateSessionRequest, ForkSessionRequest, SessionContext, SessionCore, SessionLifecycleState,
+    SessionPolicy, SessionRecord,
+};

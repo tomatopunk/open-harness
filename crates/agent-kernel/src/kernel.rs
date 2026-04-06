@@ -10,9 +10,11 @@ use mcp_bridge::McpBridgeManager;
 use plugin_system::PluginManager;
 use state_abstraction::memory_system::{MemorySystem, MemorySystemConfig};
 use state_abstraction::traits::MemoryStore;
+use state_abstraction::{CreateSessionRequest, ForkSessionRequest, SessionCore, SessionRecord};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Open Harness Agent Kernel
 #[derive(Clone)]
@@ -26,6 +28,7 @@ pub struct AgentKernel {
     hooks: Arc<HookSystem>,
     agent_loop: Arc<OnceCell<AgentLoop>>,
     memory_system: Arc<OnceCell<MemorySystem<Box<dyn MemoryStore>>>>,
+    session_core: Arc<SessionCore>,
     channel_manager: Arc<OnceCell<ChannelManager>>,
     state: Arc<RwLock<KernelState>>,
 }
@@ -52,6 +55,7 @@ impl AgentKernel {
             hooks: Arc::new(HookSystem::new()),
             agent_loop: Arc::new(OnceCell::new()),
             memory_system: Arc::new(OnceCell::new()),
+            session_core: Arc::new(SessionCore::new()),
             channel_manager: Arc::new(OnceCell::new()),
             state: Arc::new(RwLock::new(KernelState::Created)),
         }
@@ -92,6 +96,10 @@ impl AgentKernel {
         self.channel_manager.get()
     }
 
+    pub fn session_core(&self) -> &Arc<SessionCore> {
+        &self.session_core
+    }
+
     /// 获取生命周期管理器
     pub fn lifecycle_manager(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle_manager
@@ -100,6 +108,25 @@ impl AgentKernel {
     /// 获取配置
     pub fn config(&self) -> &KernelConfig {
         &self.config
+    }
+
+    pub async fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> KernelResult<SessionRecord> {
+        self.session_core.create_session(request).await.map_err(Into::into)
+    }
+
+    pub async fn attach_session(&self, session_id: Uuid) -> KernelResult<SessionRecord> {
+        self.session_core.attach_session(session_id).await.map_err(Into::into)
+    }
+
+    pub async fn fork_session(&self, request: ForkSessionRequest) -> KernelResult<SessionRecord> {
+        self.session_core.fork_session(request).await.map_err(Into::into)
+    }
+
+    pub async fn close_session(&self, session_id: Uuid) -> KernelResult<SessionRecord> {
+        self.session_core.close_session(session_id).await.map_err(Into::into)
     }
 
     /// 初始化 kernel
@@ -366,8 +393,10 @@ impl AgentKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SessionContext, SessionPolicy};
     use async_trait::async_trait;
     use plugin_system::{BasePlugin, Plugin, PluginContext, PluginError, PluginLifecycleStage};
+    use serde_json::json;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -664,5 +693,88 @@ mod tests {
             .await
             .expect("gateway plugin should remain tracked after shutdown");
         assert_eq!(gateway.state, plugin_system::PluginState::Unloaded);
+    }
+
+    #[tokio::test]
+    async fn test_session_core_create_attach_fork_close() {
+        let kernel = AgentKernel::new(KernelConfig::default());
+        let thread_id = Uuid::new_v4();
+
+        let mut context = SessionContext::new();
+        context.insert("channel", json!("manage"));
+        context.insert("request_id", json!("req-1"));
+
+        let mut root_policy = SessionPolicy::new();
+        root_policy.insert("mode", json!("safe"));
+        root_policy.insert("max_iterations", json!(10));
+
+        let root = kernel
+            .create_session(CreateSessionRequest {
+                attached_thread_id: Some(thread_id),
+                context: context.clone(),
+                policy: root_policy,
+            })
+            .await
+            .unwrap();
+
+        let attached = kernel.attach_session(root.session_id).await.unwrap();
+        assert_eq!(attached.session_id, root.session_id);
+        assert_eq!(attached.context, context);
+
+        let mut local_policy = SessionPolicy::new();
+        local_policy.insert("max_iterations", json!(3));
+        local_policy.insert("sandbox", json!("restricted"));
+
+        let child = kernel
+            .fork_session(ForkSessionRequest {
+                parent_session_id: root.session_id,
+                attached_thread_id: None,
+                local_policy: local_policy.clone(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(child.parent_session_id, Some(root.session_id));
+        assert_eq!(child.attached_thread_id, Some(thread_id));
+        assert_eq!(child.context, context);
+        assert_eq!(child.local_policy, local_policy);
+        assert_eq!(child.policy.get("mode"), Some(&json!("safe")));
+        assert_eq!(child.policy.get("max_iterations"), Some(&json!(3)));
+        assert_eq!(child.policy.get("sandbox"), Some(&json!("restricted")));
+
+        let parent = kernel.session_core().session(root.session_id).await.unwrap();
+        assert_eq!(parent.child_session_ids, vec![child.session_id]);
+
+        let closed = kernel.close_session(child.session_id).await.unwrap();
+        assert_eq!(closed.lifecycle_state, state_abstraction::SessionLifecycleState::Closed);
+        assert!(closed.closed_at.is_some());
+
+        let attach_error = kernel.attach_session(child.session_id).await.unwrap_err();
+        assert_eq!(attach_error.category(), crate::KernelErrorCategory::Runtime);
+        assert!(matches!(attach_error, KernelError::State { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_session_core_rejects_invalid_parent_reference() {
+        let kernel = AgentKernel::new(KernelConfig::default());
+        let error = kernel
+            .fork_session(ForkSessionRequest {
+                parent_session_id: Uuid::new_v4(),
+                attached_thread_id: None,
+                local_policy: SessionPolicy::default(),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.category(), crate::KernelErrorCategory::Runtime);
+        match error {
+            KernelError::State { source, .. } => match source {
+                state_abstraction::StateError::NotFound(message) => {
+                    assert!(message.contains("parent session"));
+                }
+                other => panic!("unexpected state source: {other}"),
+            },
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
