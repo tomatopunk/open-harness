@@ -4,6 +4,7 @@ use crate::config::KernelConfig;
 use crate::events::{EventBus, KernelStartedEvent, KernelStoppedEvent};
 use crate::hooks::HookSystem;
 use crate::lifecycle::LifecycleManager;
+use crate::security::RuntimeSecurityChain;
 use crate::state_machine::{
     KernelEvent, KernelSideEffect, KernelState, KernelStateMachine, KernelTransition,
 };
@@ -14,7 +15,10 @@ use mcp_bridge::McpBridgeManager;
 use plugin_system::PluginManager;
 use state_abstraction::memory_system::{MemorySystem, MemorySystemConfig};
 use state_abstraction::traits::MemoryStore;
-use state_abstraction::{CreateSessionRequest, ForkSessionRequest, SessionCore, SessionRecord};
+use state_abstraction::{
+    CreateSessionRequest, ForkSessionRequest, LocalFsStateStore, SandboxExecutionStore,
+    SessionCore, SessionRecord,
+};
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
@@ -35,12 +39,15 @@ pub struct AgentKernel {
     session_core: Arc<SessionCore>,
     channel_manager: Arc<OnceCell<ChannelManager>>,
     tool_runtime: Arc<StreamingToolRuntime>,
+    security_chain: Arc<RuntimeSecurityChain>,
+    execution_audit_store: Arc<dyn SandboxExecutionStore>,
     state: Arc<RwLock<KernelState>>,
 }
 
 impl AgentKernel {
     /// 创建新的 kernel 实例
     pub fn new(config: KernelConfig) -> Self {
+        let execution_audit_store = build_execution_audit_store(&config);
         Self {
             config,
             event_bus: Arc::new(EventBus::new()),
@@ -54,6 +61,8 @@ impl AgentKernel {
             session_core: Arc::new(SessionCore::new()),
             channel_manager: Arc::new(OnceCell::new()),
             tool_runtime: Arc::new(StreamingToolRuntime::new()),
+            security_chain: Arc::new(RuntimeSecurityChain::new()),
+            execution_audit_store,
             state: Arc::new(RwLock::new(KernelState::Created)),
         }
     }
@@ -97,8 +106,16 @@ impl AgentKernel {
         &self.session_core
     }
 
-    pub fn tool_runtime(&self) -> &Arc<StreamingToolRuntime> {
+    pub(crate) fn tool_runtime(&self) -> &Arc<StreamingToolRuntime> {
         &self.tool_runtime
+    }
+
+    pub(crate) fn execution_audit_store(&self) -> &Arc<dyn SandboxExecutionStore> {
+        &self.execution_audit_store
+    }
+
+    pub(crate) fn security_chain(&self) -> &Arc<RuntimeSecurityChain> {
+        &self.security_chain
     }
 
     /// 获取生命周期管理器
@@ -426,6 +443,17 @@ impl AgentKernel {
         self.start().await?;
         Ok(())
     }
+}
+
+fn build_execution_audit_store(config: &KernelConfig) -> Arc<dyn SandboxExecutionStore> {
+    let local_fs_root = config
+        .storage
+        .local_fs
+        .as_ref()
+        .map(|local_fs| local_fs.root.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from(".deer-flow/local-fs"));
+
+    Arc::new(LocalFsStateStore::new(config.workspace_root.join(local_fs_root)))
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ mod events;
 mod hooks;
 mod kernel;
 mod lifecycle;
+mod security;
 mod state_machine;
 mod streaming_runtime;
 

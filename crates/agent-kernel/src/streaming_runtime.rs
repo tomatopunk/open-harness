@@ -1,9 +1,11 @@
 use crate::{AgentKernel, KernelError, KernelEvent, KernelResult};
 use agent_ports::{
-    PortResult, StreamingToolAdapter, ToolAdapterKind, ToolResult, ToolRuntimeChunkSink,
-    ToolRuntimeEvent, ToolRuntimeRequest,
+    ExecutionPolicyAction, PortResult, StreamingToolAdapter, ToolAdapterKind, ToolResult,
+    ToolRuntimeChunkSink, ToolRuntimeEvent, ToolRuntimeRequest,
 };
 use async_trait::async_trait;
+use serde_json::Value;
+use state_abstraction::{SandboxExecution, SessionRecord};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -92,20 +94,77 @@ impl AgentKernel {
         &self,
         request: ToolRuntimeRequest,
     ) -> KernelResult<mpsc::Receiver<ToolRuntimeEvent>> {
+        let session = self.attach_session(request.session_id).await.map_err(|error| {
+            KernelError::context(
+                format!(
+                    "Failed to attach execution session {} for tool {}",
+                    request.session_id, request.call.name
+                ),
+                error,
+            )
+        })?;
+        let evaluation = self.security_chain().evaluate(&request, &session);
+        let mut secured_request = request;
+        secured_request.security = Some(evaluation.context.clone());
+
         self.transition_tool_execution(KernelEvent::ToolExecutionStarted {
-            session_id: request.session_id,
-            tool_call_id: request.call.call_id.clone(),
-            tool_name: request.call.name.clone(),
+            session_id: secured_request.session_id,
+            tool_call_id: secured_request.call.call_id.clone(),
+            tool_name: secured_request.call.name.clone(),
         })
         .await?;
 
-        let inner_receiver = match self.tool_runtime().execute(request.clone()).await {
+        if evaluation.context.policy_action == ExecutionPolicyAction::Block {
+            let audit = build_audit_record(
+                &secured_request,
+                &session,
+                evaluation.command,
+                "blocked",
+                false,
+                String::new(),
+                evaluation.context.policy_reason.clone(),
+            );
+            self.execution_audit_store().append_execution(&audit).await.map_err(|error| {
+                KernelError::context(
+                    format!(
+                        "Failed to persist blocked execution audit for {}",
+                        secured_request.call.name
+                    ),
+                    error,
+                )
+            })?;
+
+            self.finish_tool_runtime_transition(&secured_request, false).await?;
+            return Ok(blocked_runtime_receiver(secured_request, evaluation.context.policy_reason));
+        }
+
+        let inner_receiver = match self.tool_runtime().execute(secured_request.clone()).await {
             Ok(receiver) => receiver,
             Err(error) => {
-                self.finish_tool_runtime_transition(&request, false).await?;
+                let audit = build_audit_record(
+                    &secured_request,
+                    &session,
+                    evaluation.command,
+                    "startup_error",
+                    false,
+                    String::new(),
+                    error.to_string(),
+                );
+                self.execution_audit_store().append_execution(&audit).await.map_err(
+                    |audit_error| {
+                        KernelError::context(
+                            format!(
+                                "Failed to persist startup audit for {}",
+                                secured_request.call.name
+                            ),
+                            audit_error,
+                        )
+                    },
+                )?;
+                self.finish_tool_runtime_transition(&secured_request, false).await?;
                 return Err(KernelError::Lifecycle(format!(
                     "Failed to start tool runtime for {} via {:?}: {}",
-                    request.call.name, request.adapter_kind, error
+                    secured_request.call.name, secured_request.adapter_kind, error
                 )));
             }
         };
@@ -113,7 +172,15 @@ impl AgentKernel {
         let (outer_sender, outer_receiver) = mpsc::channel(16);
         let kernel = self.clone();
         tokio::spawn(async move {
-            relay_runtime_events(kernel, request, inner_receiver, outer_sender).await;
+            relay_runtime_events(
+                kernel,
+                secured_request,
+                session,
+                evaluation.command,
+                inner_receiver,
+                outer_sender,
+            )
+            .await;
         });
 
         Ok(outer_receiver)
@@ -137,17 +204,59 @@ impl AgentKernel {
 async fn relay_runtime_events(
     kernel: AgentKernel,
     request: ToolRuntimeRequest,
+    session: SessionRecord,
+    command: Option<String>,
     mut inner_receiver: mpsc::Receiver<ToolRuntimeEvent>,
     outer_sender: mpsc::Sender<ToolRuntimeEvent>,
 ) {
     while let Some(event) = inner_receiver.recv().await {
-        let terminal_success = match &event {
+        let terminal = match &event {
+            ToolRuntimeEvent::Finalize { result, .. } => Some((
+                true,
+                build_audit_record(
+                    &request,
+                    &session,
+                    command.clone(),
+                    "finalized",
+                    result.success,
+                    serialize_result_payload(&result.data),
+                    result.metadata.error_message.clone().unwrap_or_default(),
+                ),
+            )),
+            ToolRuntimeEvent::Error { error, .. } => Some((
+                false,
+                build_audit_record(
+                    &request,
+                    &session,
+                    command.clone(),
+                    "error",
+                    false,
+                    String::new(),
+                    error.clone(),
+                ),
+            )),
+            ToolRuntimeEvent::Request { .. } | ToolRuntimeEvent::StreamChunk { .. } => None,
+        };
+
+        let event_to_send = if let Some((_, audit)) = &terminal {
+            match kernel.execution_audit_store().append_execution(audit).await {
+                Ok(()) => event,
+                Err(error) => ToolRuntimeEvent::Error {
+                    call_id: request.call.call_id.clone(),
+                    error: format!("security audit failed: {error}"),
+                },
+            }
+        } else {
+            event
+        };
+
+        let terminal_success = match &event_to_send {
             ToolRuntimeEvent::Finalize { .. } => Some(true),
             ToolRuntimeEvent::Error { .. } => Some(false),
             ToolRuntimeEvent::Request { .. } | ToolRuntimeEvent::StreamChunk { .. } => None,
         };
 
-        if outer_sender.send(event).await.is_err() {
+        if outer_sender.send(event_to_send).await.is_err() {
             break;
         }
 
@@ -158,21 +267,79 @@ async fn relay_runtime_events(
     }
 }
 
+fn blocked_runtime_receiver(
+    request: ToolRuntimeRequest,
+    reason: String,
+) -> mpsc::Receiver<ToolRuntimeEvent> {
+    let (sender, receiver) = mpsc::channel(4);
+    tokio::spawn(async move {
+        if sender.send(ToolRuntimeEvent::Request { request: request.clone() }).await.is_err() {
+            return;
+        }
+        let _ = sender
+            .send(ToolRuntimeEvent::Error { call_id: request.call.call_id.clone(), error: reason })
+            .await;
+    });
+    receiver
+}
+
+fn build_audit_record(
+    request: &ToolRuntimeRequest,
+    session: &SessionRecord,
+    command: Option<String>,
+    outcome: &str,
+    success: bool,
+    stdout: String,
+    stderr: String,
+) -> SandboxExecution {
+    let security = request.security.clone().expect("secured request must include security context");
+    SandboxExecution::new(
+        uuid::Uuid::new_v4(),
+        session.session_id,
+        request.thread_id.0,
+        request.call.call_id.clone(),
+        request.call.name.clone(),
+        request.adapter_kind,
+        request.provider_name.clone(),
+        command,
+        security.policy_action,
+        security.policy_reason,
+        security.sandbox_profile,
+        security.bash_classification.as_ref().map(|classification| classification.risk),
+        security.bash_classification.as_ref().map(|classification| classification.reason.clone()),
+        outcome.to_string(),
+        success,
+        None,
+        stdout,
+        stderr,
+    )
+}
+
+fn serialize_result_payload(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| String::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{KernelConfig, KernelState};
+    use crate::config::LocalFsConfig;
+    use crate::{CreateSessionRequest, KernelConfig, KernelState, SessionContext, SessionPolicy};
     use agent_ports::{
-        RunId, ThreadId, ToolCallSpec, ToolProviderType, ToolResultMetadata, ToolRuntimeEvent,
+        BashCommandRisk, ExecutionPolicyAction, ProcessSandboxProfile, RunId, ThreadId,
+        ToolCallSpec, ToolProviderType, ToolResultMetadata, ToolRuntimeEvent,
     };
     use serde_json::json;
+    use state_abstraction::{LocalFsStateStore, SandboxExecutionStore};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
 
     struct RecordingExecutor {
         payload_label: &'static str,
         should_fail: bool,
+        seen_requests: Arc<Mutex<Vec<ToolRuntimeRequest>>>,
     }
 
     #[async_trait]
@@ -182,6 +349,7 @@ mod tests {
             request: &ToolRuntimeRequest,
             sink: &mut dyn ToolRuntimeChunkSink,
         ) -> PortResult<ToolResult> {
+            self.seen_requests.lock().await.push(request.clone());
             sink.emit(json!({"adapter": self.payload_label, "phase": "stream"}))?;
             if self.should_fail {
                 return Err(agent_ports::PortError::Tool(format!(
@@ -221,16 +389,32 @@ mod tests {
         let mut config = KernelConfig::default();
         config.workspace_root = workspace_root.clone();
         config.plugins_dir = workspace_root.join("plugins");
+        config.storage.local_fs =
+            Some(LocalFsConfig { root: std::path::PathBuf::from(".deer-flow/local-fs") });
         AgentKernel::new(config)
     }
 
+    async fn test_session(kernel: &AgentKernel, policy: SessionPolicy) -> Uuid {
+        kernel
+            .create_session(CreateSessionRequest {
+                attached_thread_id: None,
+                context: SessionContext::new(),
+                policy,
+            })
+            .await
+            .unwrap()
+            .session_id
+    }
+
     fn runtime_request(
+        session_id: Uuid,
         adapter_kind: ToolAdapterKind,
         provider_type: ToolProviderType,
         provider_name: &str,
+        args: serde_json::Value,
     ) -> ToolRuntimeRequest {
         ToolRuntimeRequest {
-            session_id: uuid::Uuid::nil(),
+            session_id,
             run_id: RunId::new_v4(),
             thread_id: ThreadId::new_v4(),
             adapter_kind,
@@ -238,10 +422,22 @@ mod tests {
             provider_name: provider_name.to_string(),
             call: ToolCallSpec {
                 name: format!("{provider_name}-tool"),
-                args: json!({"value": provider_name}),
+                args,
                 call_id: format!("call-{provider_name}"),
             },
+            security: None,
         }
+    }
+
+    fn audit_store(kernel: &AgentKernel) -> LocalFsStateStore {
+        let root = kernel
+            .config()
+            .storage
+            .local_fs
+            .as_ref()
+            .map(|local_fs| kernel.config().workspace_root.join(&local_fs.root))
+            .unwrap();
+        LocalFsStateStore::new(root)
     }
 
     async fn collect_events(
@@ -260,10 +456,27 @@ mod tests {
         kernel.initialize().await.unwrap();
         kernel.start().await.unwrap();
 
-        let local = Arc::new(RecordingExecutor { payload_label: "local", should_fail: false });
-        let mcp = Arc::new(RecordingExecutor { payload_label: "mcp", should_fail: false });
-        let skill = Arc::new(RecordingExecutor { payload_label: "skill", should_fail: false });
-        let web = Arc::new(RecordingExecutor { payload_label: "web", should_fail: false });
+        let local_requests = Arc::new(Mutex::new(Vec::new()));
+        let local = Arc::new(RecordingExecutor {
+            payload_label: "local",
+            should_fail: false,
+            seen_requests: local_requests.clone(),
+        });
+        let mcp = Arc::new(RecordingExecutor {
+            payload_label: "mcp",
+            should_fail: false,
+            seen_requests: Arc::new(Mutex::new(Vec::new())),
+        });
+        let skill = Arc::new(RecordingExecutor {
+            payload_label: "skill",
+            should_fail: false,
+            seen_requests: Arc::new(Mutex::new(Vec::new())),
+        });
+        let web = Arc::new(RecordingExecutor {
+            payload_label: "web",
+            should_fail: false,
+            seen_requests: Arc::new(Mutex::new(Vec::new())),
+        });
 
         kernel.register_tool_adapter(Arc::new(FileToolAdapter::new("file", local.clone()))).await;
         kernel.register_tool_adapter(Arc::new(BashToolAdapter::new("bash", local.clone()))).await;
@@ -285,12 +498,48 @@ mod tests {
         );
 
         let cases = vec![
-            runtime_request(ToolAdapterKind::File, ToolProviderType::Local, "file"),
-            runtime_request(ToolAdapterKind::Bash, ToolProviderType::Local, "bash"),
-            runtime_request(ToolAdapterKind::AgentFork, ToolProviderType::Local, "agent"),
-            runtime_request(ToolAdapterKind::Mcp, ToolProviderType::Mcp, "mcp"),
-            runtime_request(ToolAdapterKind::Skill, ToolProviderType::Skill, "skill"),
-            runtime_request(ToolAdapterKind::Web, ToolProviderType::Community, "web"),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::File,
+                ToolProviderType::Local,
+                "file",
+                json!({"path": "README.md"}),
+            ),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::Bash,
+                ToolProviderType::Local,
+                "bash",
+                json!({"command": "pwd"}),
+            ),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::AgentFork,
+                ToolProviderType::Local,
+                "agent",
+                json!({"task": "delegate"}),
+            ),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::Mcp,
+                ToolProviderType::Mcp,
+                "mcp",
+                json!({"server": "demo"}),
+            ),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::Skill,
+                ToolProviderType::Skill,
+                "skill",
+                json!({"name": "lint"}),
+            ),
+            runtime_request(
+                test_session(&kernel, SessionPolicy::new()).await,
+                ToolAdapterKind::Web,
+                ToolProviderType::Community,
+                "web",
+                json!({"url": "https://example.com"}),
+            ),
         ];
 
         for case in cases {
@@ -305,6 +554,7 @@ mod tests {
             );
         }
 
+        assert!(local_requests.lock().await.iter().all(|request| request.security.is_some()));
         assert_eq!(kernel.current_state().await, KernelState::Running);
     }
 
@@ -313,19 +563,28 @@ mod tests {
         let kernel = test_kernel("error-terminal");
         kernel.initialize().await.unwrap();
         kernel.start().await.unwrap();
+        let seen_requests = Arc::new(Mutex::new(Vec::new()));
         kernel
             .register_tool_adapter(Arc::new(BashToolAdapter::new(
                 "bash",
-                Arc::new(RecordingExecutor { payload_label: "bash", should_fail: true }),
+                Arc::new(RecordingExecutor {
+                    payload_label: "bash",
+                    should_fail: true,
+                    seen_requests: seen_requests.clone(),
+                }),
             )))
             .await;
+
+        let session_id = test_session(&kernel, SessionPolicy::new()).await;
 
         let events = collect_events(
             kernel
                 .execute_tool_runtime(runtime_request(
+                    session_id,
                     ToolAdapterKind::Bash,
                     ToolProviderType::Local,
                     "bash",
+                    json!({"command": "pwd"}),
                 ))
                 .await
                 .unwrap(),
@@ -337,6 +596,148 @@ mod tests {
         assert!(
             matches!(&events[2], ToolRuntimeEvent::Error { error, .. } if error.contains("executor failed"))
         );
+        let seen = seen_requests.lock().await;
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].security.as_ref().unwrap().policy_action, ExecutionPolicyAction::Allow);
         assert_eq!(kernel.current_state().await, KernelState::Running);
+    }
+
+    #[tokio::test]
+    async fn harmless_bash_command_is_allowed_and_audited() {
+        let kernel = test_kernel("harmless-audit");
+        kernel.initialize().await.unwrap();
+        kernel.start().await.unwrap();
+
+        let seen_requests = Arc::new(Mutex::new(Vec::new()));
+        kernel
+            .register_tool_adapter(Arc::new(BashToolAdapter::new(
+                "bash",
+                Arc::new(RecordingExecutor {
+                    payload_label: "bash",
+                    should_fail: false,
+                    seen_requests: seen_requests.clone(),
+                }),
+            )))
+            .await;
+
+        let session_id = test_session(&kernel, SessionPolicy::new()).await;
+        let request = runtime_request(
+            session_id,
+            ToolAdapterKind::Bash,
+            ToolProviderType::Local,
+            "bash",
+            json!({"command": "pwd"}),
+        );
+        let thread_id = request.thread_id.0;
+
+        let events = collect_events(kernel.execute_tool_runtime(request).await.unwrap()).await;
+
+        assert!(matches!(&events[2], ToolRuntimeEvent::Finalize { result, .. } if result.success));
+        let seen = seen_requests.lock().await;
+        assert_eq!(seen.len(), 1);
+        let security = seen[0].security.as_ref().unwrap();
+        assert_eq!(security.policy_action, ExecutionPolicyAction::Allow);
+        assert_eq!(security.sandbox_profile, ProcessSandboxProfile::Standard);
+
+        let audits = audit_store(&kernel).list_executions(thread_id).await.unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].policy_action, ExecutionPolicyAction::Allow);
+        assert_eq!(audits[0].outcome, "finalized");
+        assert!(audits[0].success);
+        assert_eq!(audits[0].command.as_deref(), Some("pwd"));
+    }
+
+    #[tokio::test]
+    async fn dangerous_bash_command_is_blocked_before_executor_and_audited() {
+        let kernel = test_kernel("dangerous-blocked");
+        kernel.initialize().await.unwrap();
+        kernel.start().await.unwrap();
+
+        let seen_requests = Arc::new(Mutex::new(Vec::new()));
+        kernel
+            .register_tool_adapter(Arc::new(BashToolAdapter::new(
+                "bash",
+                Arc::new(RecordingExecutor {
+                    payload_label: "bash",
+                    should_fail: false,
+                    seen_requests: seen_requests.clone(),
+                }),
+            )))
+            .await;
+
+        let session_id = test_session(&kernel, SessionPolicy::new()).await;
+        let request = runtime_request(
+            session_id,
+            ToolAdapterKind::Bash,
+            ToolProviderType::Local,
+            "bash",
+            json!({"command": "rm -rf / --no-preserve-root"}),
+        );
+        let thread_id = request.thread_id.0;
+
+        let events = collect_events(kernel.execute_tool_runtime(request).await.unwrap()).await;
+
+        assert!(
+            matches!(&events[0], ToolRuntimeEvent::Request { request } if request.security.as_ref().unwrap().policy_action == ExecutionPolicyAction::Block)
+        );
+        assert!(
+            matches!(&events[1], ToolRuntimeEvent::Error { error, .. } if error.contains("blocked high-risk command"))
+        );
+        assert!(seen_requests.lock().await.is_empty());
+
+        let audits = audit_store(&kernel).list_executions(thread_id).await.unwrap();
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].policy_action, ExecutionPolicyAction::Block);
+        assert_eq!(audits[0].outcome, "blocked");
+        assert!(!audits[0].success);
+        assert_eq!(audits[0].classifier_risk, Some(BashCommandRisk::High));
+        assert!(audits[0].stderr.contains("blocked high-risk command"));
+    }
+
+    #[tokio::test]
+    async fn runtime_execution_path_always_injects_security_context_before_adapter_invocation() {
+        let kernel = test_kernel("security-no-bypass");
+        kernel.initialize().await.unwrap();
+        kernel.start().await.unwrap();
+
+        let seen_requests = Arc::new(Mutex::new(Vec::new()));
+        kernel
+            .register_tool_adapter(Arc::new(FileToolAdapter::new(
+                "file",
+                Arc::new(RecordingExecutor {
+                    payload_label: "file",
+                    should_fail: false,
+                    seen_requests: seen_requests.clone(),
+                }),
+            )))
+            .await;
+
+        let mut policy = SessionPolicy::new();
+        policy.insert("sandbox", json!("restricted"));
+        let session_id = test_session(&kernel, policy).await;
+
+        let events = collect_events(
+            kernel
+                .execute_tool_runtime(runtime_request(
+                    session_id,
+                    ToolAdapterKind::File,
+                    ToolProviderType::Local,
+                    "file",
+                    json!({"path": "README.md"}),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert!(matches!(&events[2], ToolRuntimeEvent::Finalize { .. }));
+        let seen = seen_requests.lock().await;
+        assert_eq!(seen.len(), 1);
+        let security = seen[0].security.as_ref().unwrap();
+        assert_eq!(security.policy_action, ExecutionPolicyAction::Allow);
+        assert_eq!(security.sandbox_profile, ProcessSandboxProfile::Restricted);
+        assert!(security
+            .policy_reason
+            .contains("session policy requested restricted process sandbox"));
     }
 }
