@@ -111,101 +111,151 @@ impl AgentKernel {
 
         tracing::info!("Initializing Open Harness Agent Kernel...");
 
-        // 初始化 LLM provider from configuration
-        let provider = create_provider(&self.config.llm).map_err(|e| {
-            KernelError::Initialization(format!("Failed to create LLM provider: {}", e))
-        })?;
-        self.llm_provider
-            .set(provider)
-            .map_err(|_| KernelError::Lifecycle("LLM provider already initialized".to_string()))?;
-
-        // 初始化 MCP bridge
-        let mcp_config = mcp_bridge::McpBridgeConfig::default();
-        let mcp_bridge = mcp_bridge::McpBridgeManager::new(mcp_config);
-        mcp_bridge.initialize().await.map_err(|e| {
-            KernelError::Initialization(format!("Failed to initialize MCP bridge: {}", e))
-        })?;
-        self.mcp_bridge
-            .set(mcp_bridge)
-            .map_err(|_| KernelError::Lifecycle("MCP bridge already initialized".to_string()))?;
-
-        // 初始化插件管理器
-        let plugin_manager = PluginManager::new(self.config.plugins_dir.clone());
-        plugin_manager.discover_plugins().await?;
-        self.plugin_manager.set(plugin_manager).map_err(|_| {
-            KernelError::Lifecycle("Plugin manager already initialized".to_string())
-        })?;
-
-        // 初始化 Agent Loop（如果配置启用）
-        if self.config.agent_loop.enabled {
-            let agent_loop = AgentLoop::new(
-                self.config.agent_loop.clone(),
-                self.hooks.clone(),
-                self.event_bus.clone(),
-                self.llm_provider.clone(),
-            );
-            self.agent_loop.set(agent_loop).map_err(|_| {
-                KernelError::Lifecycle("Agent Loop already initialized".to_string())
-            })?;
-        }
-
-        // 初始化 Memory System（如果配置启用）
-        if self.config.memory.enabled {
-            let memory_config = MemorySystemConfig {
-                max_facts: self.config.memory.max_facts,
-                fact_confidence_threshold: self.config.memory.fact_confidence_threshold,
-                max_injection_tokens: self.config.memory.max_injection_tokens,
-            };
-            // Convert agent-kernel config to state-abstraction config
-            let storage_config = state_abstraction::StorageConfig {
-                mode: match self.config.storage.mode {
-                    crate::config::StorageMode::LocalFs => state_abstraction::StorageMode::LocalFs,
-                    crate::config::StorageMode::Sqlite => state_abstraction::StorageMode::Sqlite,
-                    crate::config::StorageMode::Postgres => {
-                        state_abstraction::StorageMode::Postgres
-                    }
-                },
-                local_fs: self
-                    .config
-                    .storage
-                    .local_fs
-                    .as_ref()
-                    .map(|l| state_abstraction::LocalFsConfig { root: l.root.clone() }),
-                sqlite: None,
-            };
-            let store = state_abstraction::create_memory_store(
-                &storage_config,
-                &self.config.workspace_root,
-                &self.config.memory.storage_path,
-            )
-            .map_err(|e| {
-                KernelError::Initialization(format!("Failed to create memory store: {}", e))
-            })?;
-            let memory_system = MemorySystem::new(memory_config, store);
-            self.memory_system.set(memory_system).map_err(|_| {
-                KernelError::Lifecycle("Memory system already initialized".to_string())
-            })?;
-        }
-
-        // 初始化 Channel Manager
-        let channel_manager = ChannelManager::new(self.config.channels.clone());
-        self.channel_manager.set(channel_manager).map_err(|_| {
-            KernelError::Lifecycle("Channel manager already initialized".to_string())
-        })?;
-
-        // 运行初始化生命周期
-        self.lifecycle_manager
-            .run_stages(&[
-                LifecycleStage::BeforeInit,
-                LifecycleStage::Init,
-                LifecycleStage::AfterInit,
-            ])
-            .await?;
+        self.initialize_provider_adapter()?;
+        self.initialize_mcp_adapter().await?;
+        self.initialize_plugin_adapter().await?;
+        self.initialize_loop_state_adapter()?;
+        self.initialize_channel_adapter()?;
+        self.run_initialize_lifecycle().await?;
 
         *state = KernelState::Initialized;
         tracing::info!("Kernel initialized successfully");
 
         Ok(())
+    }
+
+    fn initialize_provider_adapter(&self) -> KernelResult<()> {
+        let provider = create_provider(&self.config.llm).map_err(|e| {
+            KernelError::Initialization(format!("Failed to create LLM provider: {}", e))
+        })?;
+        self.llm_provider
+            .set(provider)
+            .map_err(|_| KernelError::Lifecycle("LLM provider already initialized".to_string()))
+    }
+
+    async fn initialize_mcp_adapter(&self) -> KernelResult<()> {
+        let mcp_bridge = self.build_mcp_bridge().await?;
+        self.mcp_bridge
+            .set(mcp_bridge)
+            .map_err(|_| KernelError::Lifecycle("MCP bridge already initialized".to_string()))
+    }
+
+    async fn build_mcp_bridge(&self) -> KernelResult<McpBridgeManager> {
+        let mcp_bridge = mcp_bridge::McpBridgeManager::new(self.config.mcp.clone());
+        mcp_bridge
+            .initialize()
+            .await
+            .map_err(|error| KernelError::context("Failed to initialize MCP bridge", error))?;
+
+        Ok(mcp_bridge)
+    }
+
+    async fn initialize_plugin_adapter(&self) -> KernelResult<()> {
+        let plugin_manager = self.build_plugin_manager().await?;
+        self.plugin_manager
+            .set(plugin_manager)
+            .map_err(|_| KernelError::Lifecycle("Plugin manager already initialized".to_string()))
+    }
+
+    async fn build_plugin_manager(&self) -> KernelResult<PluginManager> {
+        let plugin_manager = PluginManager::new_with_workspace_dir(
+            self.config.plugins_dir.clone(),
+            self.config.workspace_root.clone(),
+        );
+        plugin_manager
+            .discover_plugins()
+            .await
+            .map_err(|error| KernelError::context("Failed to discover plugins", error))?;
+        Ok(plugin_manager)
+    }
+
+    fn initialize_loop_state_adapter(&self) -> KernelResult<()> {
+        self.initialize_agent_loop_adapter()?;
+        self.initialize_memory_adapter()?;
+        Ok(())
+    }
+
+    fn initialize_agent_loop_adapter(&self) -> KernelResult<()> {
+        if !self.config.agent_loop.enabled {
+            return Ok(());
+        }
+
+        let agent_loop = AgentLoop::new(
+            self.config.agent_loop.clone(),
+            self.hooks.clone(),
+            self.event_bus.clone(),
+            self.llm_provider.clone(),
+        );
+        self.agent_loop
+            .set(agent_loop)
+            .map_err(|_| KernelError::Lifecycle("Agent Loop already initialized".to_string()))
+    }
+
+    fn initialize_memory_adapter(&self) -> KernelResult<()> {
+        if !self.config.memory.enabled {
+            return Ok(());
+        }
+
+        let memory_system = self.build_memory_system()?;
+        self.memory_system
+            .set(memory_system)
+            .map_err(|_| KernelError::Lifecycle("Memory system already initialized".to_string()))
+    }
+
+    fn build_memory_system(&self) -> KernelResult<MemorySystem<Box<dyn MemoryStore>>> {
+        let memory_config = MemorySystemConfig {
+            max_facts: self.config.memory.max_facts,
+            fact_confidence_threshold: self.config.memory.fact_confidence_threshold,
+            max_injection_tokens: self.config.memory.max_injection_tokens,
+        };
+        let storage_config = self.build_state_storage_config();
+        let store = state_abstraction::create_memory_store(
+            &storage_config,
+            &self.config.workspace_root,
+            &self.config.memory.storage_path,
+        )
+        .map_err(|error| KernelError::context("Failed to create memory store", error))?;
+
+        Ok(MemorySystem::new(memory_config, store))
+    }
+
+    fn build_state_storage_config(&self) -> state_abstraction::StorageConfig {
+        state_abstraction::StorageConfig {
+            mode: match self.config.storage.mode {
+                crate::config::StorageMode::LocalFs => state_abstraction::StorageMode::LocalFs,
+                crate::config::StorageMode::Sqlite => state_abstraction::StorageMode::Sqlite,
+                crate::config::StorageMode::Postgres => state_abstraction::StorageMode::Postgres,
+            },
+            local_fs: self
+                .config
+                .storage
+                .local_fs
+                .as_ref()
+                .map(|local_fs| state_abstraction::LocalFsConfig { root: local_fs.root.clone() }),
+            sqlite: None,
+        }
+    }
+
+    fn initialize_channel_adapter(&self) -> KernelResult<()> {
+        let channel_manager = ChannelManager::new(self.config.channels.clone());
+        self.channel_manager
+            .set(channel_manager)
+            .map_err(|_| KernelError::Lifecycle("Channel manager already initialized".to_string()))
+    }
+
+    async fn run_initialize_lifecycle(&self) -> KernelResult<()> {
+        self.lifecycle_manager
+            .run_stages(&[
+                LifecycleStage::BeforeInit,
+                LifecycleStage::InitConfig,
+                LifecycleStage::InitProvider,
+                LifecycleStage::InitMcp,
+                LifecycleStage::InitPlugin,
+                LifecycleStage::InitLoopState,
+                LifecycleStage::Init,
+                LifecycleStage::AfterInit,
+            ])
+            .await
     }
 
     /// 启动 kernel
@@ -231,13 +281,24 @@ impl AgentKernel {
 
         // 加载并启动插件
         if let Some(plugin_manager) = self.plugin_manager.get() {
-            plugin_manager.load_all_plugins().await?;
+            plugin_manager
+                .load_all_plugins()
+                .await
+                .map_err(|error| KernelError::context("Failed to load plugins", error))?;
+            plugin_manager
+                .initialize_all_plugins()
+                .await
+                .map_err(|error| KernelError::context("Failed to initialize plugins", error))?;
+            plugin_manager
+                .start_all_plugins()
+                .await
+                .map_err(|error| KernelError::context("Failed to start plugins", error))?;
         }
 
         // 启动所有渠道
         if let Some(channel_manager) = self.channel_manager.get() {
             channel_manager.start_all().await.map_err(|e| {
-                KernelError::Initialization(format!("Failed to start channels: {}", e))
+                KernelError::ExternalConnection(format!("Failed to start channels: {}", e))
             })?;
         }
 
@@ -275,7 +336,14 @@ impl AgentKernel {
 
         // 停止插件
         if let Some(plugin_manager) = self.plugin_manager.get() {
-            plugin_manager.unload_all_plugins().await?;
+            plugin_manager
+                .stop_all_plugins()
+                .await
+                .map_err(|error| KernelError::context("Failed to stop plugins", error))?;
+            plugin_manager
+                .unload_all_plugins()
+                .await
+                .map_err(|error| KernelError::context("Failed to unload plugins", error))?;
         }
 
         // 运行停止生命周期
@@ -314,5 +382,59 @@ mod tests {
 
         kernel.stop().await.unwrap();
         assert!(*kernel.state.read().await == KernelState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_initialize_respects_optional_subsystems() {
+        let mut config = KernelConfig::default();
+        config.agent_loop.enabled = false;
+        config.memory.enabled = false;
+
+        let kernel = AgentKernel::new(config);
+        kernel.initialize().await.unwrap();
+
+        assert!(kernel.llm_provider().is_some());
+        assert!(kernel.mcp_bridge().is_some());
+        assert!(kernel.channel_manager().is_some());
+        assert!(kernel.agent_loop().is_none());
+        assert!(kernel.memory_system().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_kernel_startup_keeps_gateway_plugin_available() {
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("workspace root should exist")
+            .to_path_buf();
+        let mut config = KernelConfig::default();
+        config.workspace_root = workspace_root.clone();
+        config.plugins_dir = workspace_root.join("plugins");
+        let kernel = AgentKernel::new(config);
+
+        kernel.initialize().await.unwrap();
+
+        let plugin_manager = kernel.plugin_manager.get().expect("plugin manager should initialize");
+        let gateway = plugin_manager
+            .plugin_status("gateway")
+            .await
+            .expect("gateway plugin should be discovered");
+        assert_eq!(gateway.state, plugin_system::PluginState::Discovered);
+
+        kernel.start().await.unwrap();
+
+        let gateway = plugin_manager
+            .plugin_status("gateway")
+            .await
+            .expect("gateway plugin should remain tracked after startup");
+        assert_eq!(gateway.state, plugin_system::PluginState::Running);
+
+        kernel.stop().await.unwrap();
+
+        let gateway = plugin_manager
+            .plugin_status("gateway")
+            .await
+            .expect("gateway plugin should remain tracked after shutdown");
+        assert_eq!(gateway.state, plugin_system::PluginState::Unloaded);
     }
 }
