@@ -1,12 +1,12 @@
 //! Atomic memory storage with cache invalidation.
 
 use crate::memory_document::MemoryDocument;
-use crate::traits::{MemoryStore, StateError};
+use crate::traits::{MemoryPersistence, StateError};
 use chrono::Utc;
 use uuid::Uuid;
 
 /// Atomic memory store wrapper with cache support.
-pub struct AtomicMemoryStore<S: MemoryStore> {
+pub struct AtomicMemoryStore<S: MemoryPersistence> {
     inner: S,
     cache: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<Uuid, CachedDocument>>>,
     enable_cache: bool,
@@ -19,7 +19,7 @@ struct CachedDocument {
     version: u64,
 }
 
-impl<S: MemoryStore> AtomicMemoryStore<S> {
+impl<S: MemoryPersistence> AtomicMemoryStore<S> {
     /// Create a new atomic memory store.
     pub fn new(inner: S, enable_cache: bool) -> Self {
         Self {
@@ -112,7 +112,7 @@ pub struct CacheStats {
     pub enabled: bool,
 }
 
-impl<S: MemoryStore + Clone> Clone for AtomicMemoryStore<S> {
+impl<S: MemoryPersistence + Clone> Clone for AtomicMemoryStore<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -127,6 +127,7 @@ impl<S: MemoryStore + Clone> Clone for AtomicMemoryStore<S> {
 mod tests {
     use super::*;
     use crate::memory_document::{Fact, FactCategory};
+    use crate::traits::{MemoryPersistence, MemoryStore};
     use async_trait::async_trait;
 
     // Mock store for testing
@@ -146,7 +147,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl MemoryStore for MockMemoryStore {
+    impl MemoryPersistence for MockMemoryStore {
         async fn load_memory_document(
             &self,
             thread_id: Uuid,
@@ -164,7 +165,10 @@ mod tests {
             storage.insert(thread_id, doc.clone());
             Ok(())
         }
+    }
 
+    #[async_trait]
+    impl MemoryStore for MockMemoryStore {
         async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError> {
             let storage = self.storage.read().await;
             Ok(storage.keys().cloned().collect())

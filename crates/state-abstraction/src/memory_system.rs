@@ -10,7 +10,8 @@ use crate::memory_injection::{inject_memory_to_prompt, MemoryInjectionConfig};
 use crate::memory_manager::FactManager;
 use crate::memory_merge::{MemoryMergeEngine, UserProfile};
 use crate::memory_voting::MemoryVotingEngine;
-use crate::traits::MemoryStore;
+use crate::traits::MemoryPersistence;
+use thiserror::Error;
 
 /// Configuration for the memory system.
 #[derive(Debug, Clone)]
@@ -36,8 +37,37 @@ pub struct MemorySystemStats {
     pub cache_hits: usize,
 }
 
+#[derive(Debug, Error)]
+pub enum MemorySystemError {
+    #[error("{operation} failed: {source}")]
+    StateOperation {
+        operation: &'static str,
+        #[source]
+        source: crate::traits::StateError,
+    },
+    #[error("{operation} failed: {details}")]
+    Runtime { operation: &'static str, details: String },
+}
+
+impl MemorySystemError {
+    pub fn category(&self) -> crate::traits::StateErrorCategory {
+        match self {
+            Self::StateOperation { source, .. } => source.category(),
+            Self::Runtime { .. } => crate::traits::StateErrorCategory::Runtime,
+        }
+    }
+
+    fn state_operation(operation: &'static str, source: crate::traits::StateError) -> Self {
+        Self::StateOperation { operation, source }
+    }
+
+    fn runtime(operation: &'static str, details: impl Into<String>) -> Self {
+        Self::Runtime { operation, details: details.into() }
+    }
+}
+
 /// Unified memory system for long-term fact management.
-pub struct MemorySystem<S: MemoryStore> {
+pub struct MemorySystem<S: MemoryPersistence> {
     config: MemorySystemConfig,
     voting_engine: MemoryVotingEngine,
     fact_manager: FactManager,
@@ -45,7 +75,7 @@ pub struct MemorySystem<S: MemoryStore> {
     stats: std::sync::Arc<tokio::sync::RwLock<MemorySystemStats>>,
 }
 
-impl<S: MemoryStore> MemorySystem<S> {
+impl<S: MemoryPersistence> MemorySystem<S> {
     /// Create a new memory system.
     pub fn new(config: MemorySystemConfig, store: S) -> Self {
         let voting_engine = MemoryVotingEngine::with_defaults();
@@ -92,17 +122,18 @@ impl<S: MemoryStore> MemorySystem<S> {
         llm_port: Box<dyn agent_ports::LLMPort>,
         thread_id: Uuid,
         conversation: &str,
-    ) -> Result<FactExtractionResult, String> {
+    ) -> Result<FactExtractionResult, MemorySystemError> {
         // Load current memory
-        let mut memory = self
-            .load_memory(thread_id)
-            .await
-            .map_err(|e| format!("Failed to load memory: {}", e))?;
+        let mut memory = self.load_memory(thread_id).await.map_err(|error| {
+            MemorySystemError::state_operation("load memory for fact extraction", error)
+        })?;
 
         // Extract facts using LLM
         let extractor = FactExtractor::new(llm_port, self.config.fact_confidence_threshold);
 
-        let update = extractor.extract(&memory, conversation).await?;
+        let update = extractor.extract(&memory, conversation).await.map_err(|error| {
+            MemorySystemError::runtime("extract facts from conversation", error)
+        })?;
         let processed = extractor.process_update(update, thread_id.to_string());
 
         let facts_extracted = processed.new_facts.len();
@@ -115,9 +146,9 @@ impl<S: MemoryStore> MemorySystem<S> {
         let manage_stats = self.fact_manager.apply_to_document(&mut memory);
 
         // Save atomically
-        self.save_memory(thread_id, &memory)
-            .await
-            .map_err(|e| format!("Failed to save memory: {}", e))?;
+        self.save_memory(thread_id, &memory).await.map_err(|error| {
+            MemorySystemError::state_operation("save extracted memory updates", error)
+        })?;
 
         // Update stats
         {
@@ -141,10 +172,13 @@ impl<S: MemoryStore> MemorySystem<S> {
         llm_port: Box<dyn agent_ports::LLMPort>,
         user_id: String,
         thread_memories: &[(ThreadId, MemoryDocument)],
-    ) -> Result<MergeResult, String> {
+    ) -> Result<MergeResult, MemorySystemError> {
         let merge_engine = MemoryMergeEngine::new(llm_port, self.voting_engine.clone());
 
-        let result = merge_engine.merge_threads(user_id, thread_memories, None).await?;
+        let result = merge_engine
+            .merge_threads(user_id, thread_memories, None)
+            .await
+            .map_err(|error| MemorySystemError::runtime("merge thread memories", error))?;
 
         {
             let mut stats = self.stats.write().await;
@@ -179,11 +213,10 @@ impl<S: MemoryStore> MemorySystem<S> {
         content: String,
         category: FactCategory,
         confidence: f32,
-    ) -> Result<(), String> {
-        let mut memory = self
-            .load_memory(thread_id)
-            .await
-            .map_err(|e| format!("Failed to load memory: {}", e))?;
+    ) -> Result<(), MemorySystemError> {
+        let mut memory = self.load_memory(thread_id).await.map_err(|error| {
+            MemorySystemError::state_operation("load memory for manual fact insertion", error)
+        })?;
 
         let fact = Fact::new(content, category, confidence, thread_id.to_string());
         memory.add_fact(fact);
@@ -192,9 +225,9 @@ impl<S: MemoryStore> MemorySystem<S> {
         self.fact_manager.apply_to_document(&mut memory);
 
         // Save
-        self.save_memory(thread_id, &memory)
-            .await
-            .map_err(|e| format!("Failed to save memory: {}", e))
+        self.save_memory(thread_id, &memory).await.map_err(|error| {
+            MemorySystemError::state_operation("save memory after manual fact insertion", error)
+        })
     }
 
     /// Get statistics.
@@ -229,7 +262,8 @@ pub struct MergeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::MemoryStore;
+    use crate::memory_merge::test_utils::MockLLMPort;
+    use crate::traits::{MemoryPersistence, MemoryStore, StateError, StateErrorCategory};
     use async_trait::async_trait;
 
     // Mock store for testing
@@ -250,7 +284,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl MemoryStore for MockStore {
+    impl MemoryPersistence for MockStore {
         async fn load_memory_document(
             &self,
             thread_id: Uuid,
@@ -268,7 +302,10 @@ mod tests {
             storage.insert(thread_id, doc.clone());
             Ok(())
         }
+    }
 
+    #[async_trait]
+    impl MemoryStore for MockStore {
         async fn list_thread_ids_with_memory(
             &self,
         ) -> Result<Vec<Uuid>, crate::traits::StateError> {
@@ -282,5 +319,73 @@ mod tests {
         let config = MemorySystemConfig::default();
         let store = MockStore::new();
         let _system = MemorySystem::new(config, store);
+    }
+
+    struct FailingLoadStore;
+
+    #[async_trait]
+    impl MemoryPersistence for FailingLoadStore {
+        async fn load_memory_document(
+            &self,
+            _thread_id: Uuid,
+        ) -> Result<MemoryDocument, crate::traits::StateError> {
+            Err(StateError::Backend("memory backend unavailable".to_string()))
+        }
+
+        async fn save_memory_document(
+            &self,
+            _thread_id: Uuid,
+            _doc: &MemoryDocument,
+        ) -> Result<(), crate::traits::StateError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn add_fact_preserves_state_source_context_and_category() {
+        let system = MemorySystem::new(MemorySystemConfig::default(), FailingLoadStore);
+        let error = system
+            .add_fact(
+                Uuid::new_v4(),
+                "prefers terminal editors".to_string(),
+                FactCategory::Preference,
+                0.9,
+            )
+            .await
+            .expect_err("load should fail");
+
+        assert_eq!(error.category(), StateErrorCategory::ExternalConnection);
+
+        match error {
+            MemorySystemError::StateOperation { operation, source } => {
+                assert_eq!(operation, "load memory for manual fact insertion");
+                match source {
+                    StateError::Backend(message) => {
+                        assert!(message.contains("memory backend unavailable"));
+                    }
+                    other => panic!("unexpected source: {other}"),
+                }
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_thread_memories_maps_runtime_failures_to_runtime_category() {
+        let system = MemorySystem::new(MemorySystemConfig::default(), MockStore::new());
+        let error = system
+            .merge_thread_memories(Box::new(MockLLMPort::new()), "user-1".to_string(), &[])
+            .await
+            .expect_err("empty thread memories should fail");
+
+        assert_eq!(error.category(), StateErrorCategory::Runtime);
+
+        match error {
+            MemorySystemError::Runtime { operation, details } => {
+                assert_eq!(operation, "merge thread memories");
+                assert!(details.contains("No thread memories to merge"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }

@@ -13,10 +13,10 @@ use crate::delete_thread_report::{
 use crate::path_safety::sanitize_thread_id;
 use crate::traits::{
     ArtifactStore, CheckpointStore, ManageAppConfig, ManageConfigStore, ManageTaskRecord,
-    ManageTaskStore, McpConfigStore, MemoryStore, SandboxExecution, SandboxExecutionStore,
-    SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore, ThreadLifecycleStore,
-    ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord, ToolRecordStore,
-    UnifiedConfigStore,
+    ManageTaskStore, McpConfigStore, MemoryPersistence, MemoryStore, SandboxExecution,
+    SandboxExecutionStore, SkillRecord, SkillStore, StateError, SubagentTask, SubagentTaskStore,
+    ThreadLifecycleStore, ThreadMeta, ThreadMetaStore, ThreadUploadStore, ToolRecord,
+    ToolRecordStore, UnifiedConfigStore,
 };
 use std::collections::HashMap;
 
@@ -307,7 +307,7 @@ impl ArtifactStore for LocalFsStateStore {
 }
 
 #[async_trait]
-impl MemoryStore for LocalFsStateStore {
+impl MemoryPersistence for LocalFsStateStore {
     async fn load_memory_document(
         &self,
         thread_id: Uuid,
@@ -342,7 +342,10 @@ impl MemoryStore for LocalFsStateStore {
             self.write_json(&path, doc).await
         }
     }
+}
 
+#[async_trait]
+impl MemoryStore for LocalFsStateStore {
     async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError> {
         let dir = self.root.join("memory");
         let mut rd = match fs::read_dir(dir).await {
