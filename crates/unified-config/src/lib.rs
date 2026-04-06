@@ -41,6 +41,40 @@ pub struct UnifiedConfig {
     pub acp_agents: ACPAgentsConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelRuntimeConfigView {
+    pub llm: KernelRuntimeLlmConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelRuntimeLlmConfig {
+    pub name: String,
+
+    pub provider: String,
+
+    pub model_id: String,
+
+    #[serde(default)]
+    pub config: ModelConfig,
+}
+
+impl UnifiedConfig {
+    pub fn kernel_runtime_view(
+        &self,
+    ) -> Result<KernelRuntimeConfigView, loader::ConfigLoaderError> {
+        let selected_model = self.models.selected_kernel_model()?;
+
+        Ok(KernelRuntimeConfigView {
+            llm: KernelRuntimeLlmConfig {
+                name: selected_model.name.clone(),
+                provider: selected_model.provider.clone(),
+                model_id: selected_model.model_id.clone(),
+                config: selected_model.config.clone(),
+            },
+        })
+    }
+}
+
 /// Model registry containing all available LLM models.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelRegistry {
@@ -51,6 +85,30 @@ pub struct ModelRegistry {
     /// All registered model entries
     #[serde(default)]
     pub entries: Vec<ModelEntry>,
+}
+
+impl ModelRegistry {
+    pub fn selected_kernel_model(&self) -> Result<&ModelEntry, loader::ConfigLoaderError> {
+        if self.entries.is_empty() {
+            return Err(loader::ConfigLoaderError::validation(
+                "unified config",
+                None,
+                "At least one model must be configured",
+            ));
+        }
+
+        if self.default_model.is_empty() {
+            return Ok(&self.entries[0]);
+        }
+
+        self.entries.iter().find(|model| model.name == self.default_model).ok_or_else(|| {
+            loader::ConfigLoaderError::validation(
+                "unified config",
+                None,
+                format!("default_model '{}' must match a configured model", self.default_model),
+            )
+        })
+    }
 }
 
 /// A single model entry with complete configuration.
@@ -466,5 +524,87 @@ mod tests {
         assert!(config.auto_approve_permissions);
         assert_eq!(config.model, Some("gpt-4".to_string()));
         assert_eq!(config.timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn test_kernel_runtime_view_uses_explicit_default_model() {
+        let config = UnifiedConfig {
+            models: ModelRegistry {
+                default_model: "gpt-4o".to_string(),
+                entries: vec![
+                    ModelEntry {
+                        name: "gpt-4".to_string(),
+                        display_name: "GPT-4".to_string(),
+                        provider: "langchain_openai:ChatOpenAI".to_string(),
+                        model_id: "gpt-4".to_string(),
+                        config: ModelConfig::default(),
+                    },
+                    ModelEntry {
+                        name: "gpt-4o".to_string(),
+                        display_name: "GPT-4o".to_string(),
+                        provider: "open_ai".to_string(),
+                        model_id: "gpt-4o".to_string(),
+                        config: ModelConfig {
+                            api_key: Some("$OPENAI_API_KEY".to_string()),
+                            max_tokens: Some(4096),
+                            temperature: Some(0.2),
+                            ..Default::default()
+                        },
+                    },
+                ],
+            },
+            ..Default::default()
+        };
+
+        let runtime_view = config.kernel_runtime_view().unwrap();
+
+        assert_eq!(runtime_view.llm.name, "gpt-4o");
+        assert_eq!(runtime_view.llm.provider, "open_ai");
+        assert_eq!(runtime_view.llm.model_id, "gpt-4o");
+        assert_eq!(runtime_view.llm.config.max_tokens, Some(4096));
+        assert_eq!(runtime_view.llm.config.temperature, Some(0.2));
+    }
+
+    #[test]
+    fn test_kernel_runtime_view_falls_back_to_first_model_when_default_missing() {
+        let config = UnifiedConfig {
+            models: ModelRegistry {
+                default_model: String::new(),
+                entries: vec![ModelEntry {
+                    name: "gpt-4".to_string(),
+                    display_name: "GPT-4".to_string(),
+                    provider: "langchain_openai:ChatOpenAI".to_string(),
+                    model_id: "gpt-4".to_string(),
+                    config: ModelConfig::default(),
+                }],
+            },
+            ..Default::default()
+        };
+
+        let runtime_view = config.kernel_runtime_view().unwrap();
+
+        assert_eq!(runtime_view.llm.name, "gpt-4");
+        assert_eq!(runtime_view.llm.model_id, "gpt-4");
+    }
+
+    #[test]
+    fn test_kernel_runtime_view_rejects_unknown_default_model() {
+        let config = UnifiedConfig {
+            models: ModelRegistry {
+                default_model: "missing".to_string(),
+                entries: vec![ModelEntry {
+                    name: "gpt-4".to_string(),
+                    display_name: "GPT-4".to_string(),
+                    provider: "langchain_openai:ChatOpenAI".to_string(),
+                    model_id: "gpt-4".to_string(),
+                    config: ModelConfig::default(),
+                }],
+            },
+            ..Default::default()
+        };
+
+        let error = config.kernel_runtime_view().unwrap_err();
+
+        assert!(error.to_string().contains("default_model 'missing'"));
     }
 }

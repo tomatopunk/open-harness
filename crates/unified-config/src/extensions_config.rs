@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Extensions configuration containing MCP servers and skills.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,10 +71,42 @@ pub struct SkillState {
 
 impl ExtensionsConfig {
     /// Load from JSON file.
-    pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let config: Self = serde_json::from_str(&content)?;
+    pub fn from_file(path: &Path) -> Result<Self, crate::loader::ConfigLoaderError> {
+        let content = std::fs::read_to_string(path).map_err(|error| {
+            crate::loader::ConfigLoaderError::io("extensions config", path, error)
+        })?;
+        let config: Self = serde_json::from_str(&content).map_err(|error| {
+            crate::loader::ConfigLoaderError::parse("extensions config", path, "json", error)
+        })?;
+        config.validate(path)?;
         Ok(config)
+    }
+
+    fn validate(&self, path: &Path) -> Result<(), crate::loader::ConfigLoaderError> {
+        for (name, server) in &self.mcp_servers {
+            match server.r#type.as_str() {
+                "stdio" | "sse" | "http" => {}
+                other => {
+                    return Err(crate::loader::ConfigLoaderError::validation(
+                        "extensions config",
+                        Some(path),
+                        format!("MCP server '{name}' has unsupported transport type '{other}'"),
+                    ));
+                }
+            }
+        }
+
+        for (name, state) in &self.skills {
+            if state.version.trim().is_empty() {
+                return Err(crate::loader::ConfigLoaderError::validation(
+                    "extensions config",
+                    Some(path),
+                    format!("Skill '{name}' must declare a non-empty version"),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Get enabled MCP servers.
