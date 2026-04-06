@@ -13,6 +13,7 @@ mod events;
 mod hooks;
 mod kernel;
 mod lifecycle;
+mod state_machine;
 
 pub use agent_loop::AgentLoop;
 pub use channel_manager::{Channel, ChannelManager, InboundMessage, OutboundMessage};
@@ -30,4 +31,8 @@ pub use llm_providers::{ProviderConfig, ProviderType};
 pub use state_abstraction::{
     CreateSessionRequest, ForkSessionRequest, SessionContext, SessionCore, SessionLifecycleState,
     SessionPolicy, SessionRecord,
+};
+pub use state_machine::{
+    KernelEvent, KernelGuard, KernelSideEffect, KernelState, KernelStateMachine,
+    KernelStateTransitionError, KernelTransition,
 };
