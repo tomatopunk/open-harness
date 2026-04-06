@@ -4,6 +4,14 @@
 
 Open Harness V2 是一个真正开放的 agent 内核架构，参考了 oh-my-openagent 的插件化设计。
 
+## 当前实现状态（收口同步）
+
+- 当前收口以主链路 crate 为准：`agent-kernel`、`plugin-system`、`llm-providers`、`mcp-bridge`、`unified-config`、`state-abstraction`、`agent-ports`。
+- 实际 workspace 成员比本页最初目标态更多，还包含 `ecosystem-registry`、`package-manager` 以及 `dingtalk-plugin` 等补充成员；这些成员保留在 workspace 中，但不改变本轮边界重构的主链路方向。
+- Kernel 入口已经收敛为 `apps/kernel -> agent-kernel`，其中 `agent-kernel` 负责编排 `plugin-system`、`llm-providers`、`mcp-bridge`、`state-abstraction` 与 `unified-config`。
+- CI 当前发布前 gate 以 `.github/workflows/ci.yml` 为准：`cargo fmt --all -- --check`、`cargo lint`、`cargo build --workspace --all-targets`、`cargo xtest`、`cargo test --manifest-path e2e/Cargo.toml --tests`。
+- 最终依赖/边界收口说明见 `docs/ARCHITECTURE_V2_CLOSEOUT.md`，发布前验收面见 `docs/RELEASE_READINESS_CHECKLIST.md`，证据索引见 `.sisyphus/evidence/task-12-closeout.md`。
+
 ## 核心设计原则
 
 1. **最小化内核** - 只保留 agent 循环、事件总线、插件管理
