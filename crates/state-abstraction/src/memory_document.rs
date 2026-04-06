@@ -283,6 +283,7 @@ pub struct CompressionDecision {
 
 impl CompressionDecision {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         level: CompressionLevel,
         trigger: CompressionTriggerKind,

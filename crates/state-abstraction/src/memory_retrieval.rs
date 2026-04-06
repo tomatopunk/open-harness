@@ -516,17 +516,19 @@ mod tests {
             14,
         );
 
-        let mut doc = MemoryDocument::default();
-        doc.segmented_context = SegmentedContext {
-            recent: RecentContextSegment::default(),
-            working: WorkingContextSegment::default(),
-            archived: ArchivedContextSegment {
-                entries: vec![archived_entry],
-                estimated_tokens: 14,
-                updated_at: None,
+        let doc = MemoryDocument {
+            segmented_context: SegmentedContext {
+                recent: RecentContextSegment::default(),
+                working: WorkingContextSegment::default(),
+                archived: ArchivedContextSegment {
+                    entries: vec![archived_entry],
+                    estimated_tokens: 14,
+                    updated_at: None,
+                },
+                compression_log: Vec::new(),
+                last_milestone_snapshot: 0,
             },
-            compression_log: Vec::new(),
-            last_milestone_snapshot: 0,
+            ..Default::default()
         };
 
         let formatted = format_segmented_memory_for_injection(
