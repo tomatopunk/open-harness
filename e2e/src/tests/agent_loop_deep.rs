@@ -12,9 +12,10 @@ async fn test_complete_agent_loop_hook_chain() {
 
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
+    kernel_config.plugins_dir = temp_dir.path().join("plugins");
     kernel_config.agent_loop = AgentLoopConfig {
         enabled: true,
-        max_iterations: 3,
+        max_iterations: 2,
         completion_promise: "TEST_DONE".to_string(),
         debounce_seconds: 0,
     };
@@ -37,11 +38,13 @@ async fn test_complete_agent_loop_hook_chain() {
         hooks
             .register_hook_async(
                 phase,
-                Box::new(move |_state| {
+                Box::new(move |state| {
                     let hook_phases = hook_phases.clone();
+                    let iteration = state.iteration;
+                    let active = state.active;
                     Box::pin(async move {
                         let mut phases = hook_phases.lock().await;
-                        phases.push(phase);
+                        phases.push((phase, iteration, active));
                         Ok(())
                     })
                 }),
@@ -49,7 +52,28 @@ async fn test_complete_agent_loop_hook_chain() {
             .await;
     }
 
+    kernel.initialize().await.unwrap();
+    kernel
+        .agent_loop()
+        .unwrap()
+        .start_loop(Uuid::new_v4(), "collect hooks".to_string())
+        .await
+        .unwrap();
+
+    let phases = hook_phases.lock().await.clone();
+    let before_iteration_count =
+        phases.iter().filter(|(phase, _, _)| *phase == HookPhase::BeforeIteration).count();
+    let after_iteration_count =
+        phases.iter().filter(|(phase, _, _)| *phase == HookPhase::AfterIteration).count();
+    let before_completion_count =
+        phases.iter().filter(|(phase, _, _)| *phase == HookPhase::BeforeCompletion).count();
+
     assert_eq!(hooks.hook_count().await, 5);
+    assert_eq!(phases.first(), Some(&(HookPhase::BeforeLoop, 0, true)));
+    assert_eq!(phases.last(), Some(&(HookPhase::AfterCompletion, 2, false)));
+    assert_eq!(before_iteration_count, 3);
+    assert_eq!(after_iteration_count, 2);
+    assert_eq!(before_completion_count, 2);
 }
 
 #[tokio::test]
@@ -58,8 +82,9 @@ async fn test_agent_loop_state_transitions_via_hooks() {
 
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
+    kernel_config.plugins_dir = temp_dir.path().join("plugins");
     kernel_config.agent_loop = AgentLoopConfig {
-        enabled: true,
+        enabled: false,
         max_iterations: 5,
         completion_promise: "DONE".to_string(),
         debounce_seconds: 0,
@@ -67,40 +92,14 @@ async fn test_agent_loop_state_transitions_via_hooks() {
 
     let kernel = AgentKernel::new(kernel_config.clone());
 
-    let iteration_count = Arc::new(Mutex::new(0));
-    let hooks = kernel.hooks();
+    assert!(kernel.agent_loop().is_none());
 
-    let ic = iteration_count.clone();
-    hooks
-        .register_hook_async(
-            HookPhase::AfterIteration,
-            Box::new(move |state| {
-                let ic = ic.clone();
-                let iteration = state.iteration;
-                Box::pin(async move {
-                    let mut count = ic.lock().await;
-                    *count = iteration;
-                    Ok(())
-                })
-            }),
-        )
-        .await;
+    kernel.initialize().await.unwrap();
 
-    let ic = iteration_count.clone();
-    hooks
-        .register_hook_async(
-            HookPhase::BeforeCompletion,
-            Box::new(move |state| {
-                let ic = ic.clone();
-                let iteration = state.iteration;
-                Box::pin(async move {
-                    let _count = ic.lock().await;
-                    assert!(iteration <= 5, "iteration should not exceed max");
-                    Ok(())
-                })
-            }),
-        )
-        .await;
+    assert!(kernel.agent_loop().is_none());
+    assert!(kernel.llm_provider().is_some());
+    assert!(kernel.memory_system().is_some());
+    assert!(kernel.channel_manager().is_some());
 }
 
 #[tokio::test]
@@ -109,6 +108,7 @@ async fn test_kernel_lifecycle_integration_with_agent_loop() {
 
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
+    kernel_config.plugins_dir = temp_dir.path().join("plugins");
 
     let kernel = AgentKernel::new(kernel_config.clone());
 
@@ -116,6 +116,13 @@ async fn test_kernel_lifecycle_integration_with_agent_loop() {
     assert!(kernel.mcp_bridge().is_none());
     assert!(kernel.agent_loop().is_none());
     assert!(kernel.memory_system().is_none());
+
+    kernel.initialize().await.unwrap();
+
+    assert!(kernel.llm_provider().is_some());
+    assert!(kernel.mcp_bridge().is_some());
+    assert!(kernel.agent_loop().is_some());
+    assert!(kernel.memory_system().is_some());
 }
 
 #[tokio::test]
@@ -124,6 +131,7 @@ async fn test_hook_system_with_multiple_kernels() {
 
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
+    kernel_config.plugins_dir = temp_dir.path().join("plugins");
 
     let kernel1 = AgentKernel::new(kernel_config.clone());
     let kernel2 = AgentKernel::new(kernel_config.clone());
@@ -220,6 +228,7 @@ async fn test_hook_clear_isolation() {
 
     let mut kernel_config = KernelConfig::default();
     kernel_config.workspace_root = temp_dir.path().to_path_buf();
+    kernel_config.plugins_dir = temp_dir.path().join("plugins");
 
     let _kernel = AgentKernel::new(kernel_config.clone());
     let hooks = HookSystem::new();

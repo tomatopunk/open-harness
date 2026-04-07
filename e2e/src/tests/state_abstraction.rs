@@ -1,52 +1,71 @@
+use serde_json::json;
 use state_abstraction::{
-    CreateSessionRequest, ForkSessionRequest, SessionContext, SessionCore, SessionPolicy,
+    CreateSessionRequest, ForkSessionRequest, SessionContext, SessionCore, SessionLifecycleState,
+    SessionPolicy,
 };
 use tokio;
 use uuid::Uuid;
 
 #[tokio::test]
-async fn test_session_core_create_and_close() {
+async fn test_session_core_create_attach_fork_and_close_flow() {
     let session_core = SessionCore::new();
+    let thread_id = Uuid::new_v4();
 
-    let create_request = CreateSessionRequest {
-        attached_thread_id: None,
-        context: SessionContext::new(),
-        policy: SessionPolicy::new(),
-    };
+    let mut context = SessionContext::new();
+    context.insert("channel", json!("manage"));
+    context.insert("user", json!("murphy"));
 
-    let result = session_core.create_session(create_request).await;
-    assert!(result.is_ok());
+    let mut parent_policy = SessionPolicy::new();
+    parent_policy.insert("mode", json!("safe"));
+    parent_policy.insert("max_iterations", json!(12));
 
-    let session = result.unwrap();
+    let session = session_core
+        .create_session(CreateSessionRequest {
+            attached_thread_id: Some(thread_id),
+            context: context.clone(),
+            policy: parent_policy.clone(),
+        })
+        .await
+        .unwrap();
+
     assert!(session.parent_session_id.is_none());
+    assert_eq!(session.attached_thread_id, Some(thread_id));
+    assert_eq!(session.context, context);
+    assert_eq!(session.policy, parent_policy);
 
-    let close_result = session_core.close_session(session.session_id).await;
-    assert!(close_result.is_ok());
-}
+    let attached = session_core.attach_session(session.session_id).await.unwrap();
+    assert_eq!(attached.session_id, session.session_id);
 
-#[tokio::test]
-async fn test_session_core_fork() {
-    let session_core = SessionCore::new();
+    let mut local_policy = SessionPolicy::new();
+    local_policy.insert("max_iterations", json!(3));
+    local_policy.insert("sandbox", json!("restricted"));
 
-    let create_request = CreateSessionRequest {
-        attached_thread_id: None,
-        context: SessionContext::new(),
-        policy: SessionPolicy::new(),
-    };
+    let child = session_core
+        .fork_session(ForkSessionRequest {
+            parent_session_id: session.session_id,
+            attached_thread_id: None,
+            local_policy: local_policy.clone(),
+        })
+        .await
+        .unwrap();
 
-    let parent_session = session_core.create_session(create_request).await.unwrap();
+    assert_eq!(child.parent_session_id, Some(session.session_id));
+    assert_eq!(child.attached_thread_id, Some(thread_id));
+    assert_eq!(child.context, context);
+    assert_eq!(child.local_policy, local_policy);
+    assert_eq!(child.policy.get("mode"), Some(&json!("safe")));
+    assert_eq!(child.policy.get("max_iterations"), Some(&json!(3)));
+    assert_eq!(child.policy.get("sandbox"), Some(&json!("restricted")));
 
-    let fork_request = ForkSessionRequest {
-        parent_session_id: parent_session.session_id,
-        attached_thread_id: None,
-        local_policy: SessionPolicy::new(),
-    };
+    let reloaded_parent = session_core.session(session.session_id).await.unwrap();
+    assert_eq!(reloaded_parent.child_session_ids, vec![child.session_id]);
 
-    let result = session_core.fork_session(fork_request).await;
-    assert!(result.is_ok());
+    let closed = session_core.close_session(session.session_id).await.unwrap();
+    assert_eq!(closed.lifecycle_state, SessionLifecycleState::Closed);
+    assert!(closed.closed_at.is_some());
 
-    let forked_session = result.unwrap();
-    assert_eq!(forked_session.parent_session_id, Some(parent_session.session_id));
+    let attach_error = session_core.attach_session(session.session_id).await.unwrap_err();
+    assert!(format!("{attach_error}").contains("closed"));
 }
 
 #[tokio::test]

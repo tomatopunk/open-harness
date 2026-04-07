@@ -4,12 +4,13 @@ use tempfile::tempdir;
 use tokio;
 
 #[tokio::test]
-async fn test_kernel_creation_succeeds() {
+async fn test_kernel_initialize_start_and_stop_succeeds() {
     let temp_dir = tempdir().unwrap();
     let workspace_root = temp_dir.path().to_path_buf();
 
     let mut config = KernelConfig::default();
     config.workspace_root = workspace_root.clone();
+    config.plugins_dir = workspace_root.join("plugins");
 
     let kernel = AgentKernel::new(config);
 
@@ -17,6 +18,17 @@ async fn test_kernel_creation_succeeds() {
     assert!(kernel.mcp_bridge().is_none());
     assert!(kernel.agent_loop().is_none());
     assert!(kernel.memory_system().is_none());
+
+    kernel.initialize().await.unwrap();
+
+    assert!(kernel.llm_provider().is_some());
+    assert!(kernel.mcp_bridge().is_some());
+    assert!(kernel.agent_loop().is_some());
+    assert!(kernel.memory_system().is_some());
+    assert!(kernel.channel_manager().is_some());
+
+    kernel.start().await.unwrap();
+    kernel.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -33,7 +45,10 @@ async fn test_kernel_config_defaults_are_sane() {
 
 #[tokio::test]
 async fn test_kernel_event_bus_is_accessible() {
-    let config = KernelConfig::default();
+    let temp_dir = tempdir().unwrap();
+    let mut config = KernelConfig::default();
+    config.workspace_root = temp_dir.path().to_path_buf();
+    config.plugins_dir = temp_dir.path().join("plugins");
     let kernel = AgentKernel::new(config);
 
     let _event_bus = kernel.event_bus();
@@ -41,10 +56,26 @@ async fn test_kernel_event_bus_is_accessible() {
 
 #[tokio::test]
 async fn test_kernel_hook_system_is_accessible() {
-    let config = KernelConfig::default();
+    let temp_dir = tempdir().unwrap();
+    let mut config = KernelConfig::default();
+    config.workspace_root = temp_dir.path().to_path_buf();
+    config.plugins_dir = temp_dir.path().join("plugins");
     let kernel = AgentKernel::new(config);
 
     let _hooks = kernel.hooks();
+}
+
+#[test]
+fn test_checked_in_runtime_configuration_resolves_against_governance_models() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let config_path = repo_root.join("config.yaml");
+
+    let config = KernelConfig::resolve_runtime(&config_path).unwrap();
+
+    assert_eq!(config.llm.model, "gpt-4");
+    assert!(config.extensions_config_path.is_some());
+    assert_eq!(config.mcp.servers.len(), 3);
+    assert_eq!(config.mcp.servers[0].name, "filesystem");
 }
 
 #[test]
