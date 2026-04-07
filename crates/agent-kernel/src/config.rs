@@ -692,13 +692,12 @@ default_model: does-not-exist
         let config_path = root.join("config.yaml");
         fs::write(
             &config_path,
-            format!(
-                r#"
+            r#"
 llm:
   provider_type: anthropic
   model: claude-3-7-sonnet
-"#,
-            ),
+"#
+            ,
         )
         .unwrap();
 
