@@ -345,7 +345,7 @@ impl KernelConfig {
             .map_err(|error| crate::KernelError::Config(error.to_string()))?;
         let mut resolved = self.clone();
         resolved.llm = provider_config_from_runtime_view(&runtime_view.llm)?;
-        resolved.mcp = self.resolve_mcp_bridge_config()?;
+        resolved.mcp = self.resolve_mcp_bridge_config(config_root)?;
         Ok(resolved)
     }
 
@@ -386,18 +386,23 @@ impl KernelConfig {
         }
     }
 
-    fn resolve_mcp_bridge_config(&self) -> crate::KernelResult<mcp_bridge::McpBridgeConfig> {
+    fn resolve_mcp_bridge_config(
+        &self,
+        config_root: &Path,
+    ) -> crate::KernelResult<mcp_bridge::McpBridgeConfig> {
         let mut mcp_config = self.mcp.clone();
         let Some(path) = self.extensions_config_path.as_deref() else {
             return Ok(mcp_config);
         };
 
         let path = Path::new(path);
-        if !path.exists() {
+        let resolved_path =
+            if path.is_absolute() { path.to_path_buf() } else { config_root.join(path) };
+        if !resolved_path.exists() {
             return Ok(mcp_config);
         }
 
-        let extensions = unified_config::ExtensionsConfig::from_file(path)
+        let extensions = unified_config::ExtensionsConfig::from_file(&resolved_path)
             .map_err(|error| crate::KernelError::Config(error.to_string()))?;
 
         let mut servers: Vec<mcp_bridge::McpServerConfig> = extensions
@@ -630,7 +635,7 @@ default_model: gpt-4
         fs::write(
             root.join("extensions_config.json"),
             r#"{
-  "mcpServers": {
+  "mcp_servers": {
     "github": {
       "enabled": true,
       "type": "stdio",

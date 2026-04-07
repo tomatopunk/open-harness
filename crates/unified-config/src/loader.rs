@@ -700,7 +700,7 @@ entries:
     "search": { "enabled": true, "version": "2.0.0" },
     "review": { "enabled": true, "version": "1.1.0" }
   },
-  "mcpServers": {}
+  "mcp_servers": {}
 }"#,
         )
         .unwrap();

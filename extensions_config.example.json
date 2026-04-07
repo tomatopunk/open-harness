@@ -1,5 +1,5 @@
 {
-  "mcpServers": {
+  "mcp_servers": {
     "filesystem": {
       "enabled": false,
       "type": "stdio",

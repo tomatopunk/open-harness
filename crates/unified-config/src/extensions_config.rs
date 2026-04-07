@@ -11,7 +11,6 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExtensionsConfig {
     /// MCP server configurations
-    #[serde(alias = "mcpServers")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
     /// Skill states (enabled/disabled with version)
     pub skills: HashMap<String, SkillState>,

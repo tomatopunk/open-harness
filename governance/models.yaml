@@ -1,4 +1,4 @@
-default_model: heuristic
+default_model: gpt-4
 entries:
-  - name: heuristic
-    provider: builtin
+  - name: gpt-4
+    provider: open_ai
