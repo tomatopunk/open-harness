@@ -24,11 +24,9 @@ open-harness/
 │   ├── mcp-bridge/          # 增强的 MCP 桥接
 │   ├── agent-ports/         # 端口抽象
 │   ├── state-abstraction/   # 状态抽象
-│   ├── mcp-client/          # MCP 客户端
 │   ├── ecosystem-registry/  # 生态系统注册
 │   ├── package-manager/     # 包管理器
-│   ├── unified-config/      # 统一配置
-│   └── runtime-langgraph-adapter/ # LangGraph 运行时适配器
+│   └── unified-config/      # 统一配置
 ├── plugins/                  # 插件目录
 ├── skills/                   # 技能目录（MCP 服务器格式）
 ├── e2e/                      # 端到端测试
@@ -54,6 +52,8 @@ make e2e
 # 运行 lint
 cargo clippy --workspace -- -D warnings
 ```
+
+`cargo run -p open-harness-kernel` 默认读取仓库根目录的 `config.yaml`，并结合 `governance/` 与 `extensions_config.json` 解析当前 runtime 配置。
 
 ## 常用命令
 

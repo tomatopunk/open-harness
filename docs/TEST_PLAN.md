@@ -30,8 +30,12 @@
 当前核心 acceptance 覆盖包括：
 - `gateway.rs` - 生命周期阶段顺序与插件失败上下文
 - `mcp.rs` - MCP 重连与工具缓存失效回归
-- `agent_loop.rs` - 配置优先级与缺失内存后端回归
+- `agent_loop.rs` / `agent_loop_deep.rs` - agent loop 配置、hook 链执行与状态边界
+- `kernel_integration.rs` - 内核初始化 / 启动 / 停止与 runtime 配置装配
+- `state_abstraction.rs` - session create / attach / fork / close 语义
+- `config_loading.rs` - `config.yaml` + `governance/` + `extensions_config.json` 的 unified runtime 装配
 - `engine_certification.rs` - session → FSM → runtime → security → memory 闭环认证
+- `capability_matrix.rs` - 六类工具族与统一 runtime 总线覆盖
 
 **当前重点**：继续保持 wrapper 风格，但确保每个发布关键链路至少有一条完整认证场景，而不是只看单模块测试。
 
@@ -147,12 +151,12 @@
 
 测试文件：`e2e/src/tests/mcp_integration.rs`
 
-#### 3. 配置加载与切换
+#### 3. 配置加载
 测试场景：
-- 加载 legacy 配置
-- 加载 unified 配置
-- 配置热重载
-- 验证配置生效
+- 加载 checked-in `config.yaml`
+- 合并 `governance/models.yaml` 默认模型选择
+- 解析 `extensions_config.json` 的 MCP server 清单
+- 验证 runtime view 对 kernel 生效
 
 测试文件：`e2e/src/tests/config_loading.rs`
 

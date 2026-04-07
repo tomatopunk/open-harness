@@ -12,7 +12,7 @@ Open Harness Kernel Lifecycle Phases
 
 Rationale
 - Breaking initialization into explicit stages provides finer-grained control, clearer error context, easier debugging, and safer incremental adoption of future features.
-- Backward compatibility is preserved by keeping Init and AfterInit in the sequence and by not changing public API surfaces beyond adding new stages.
+- `Init` and `AfterInit` remain in the runtime sequence because they are the stable hand-off between subsystem setup and the runnable kernel state machine.
 
 Usage notes
 - Tests should verify the new sequence order, and failure paths should propagate meaningful context for each stage.
