@@ -11,7 +11,6 @@ pub mod memory_extractor;
 pub mod memory_injection;
 pub mod memory_manager;
 pub mod memory_merge;
-pub mod memory_prompt;
 pub mod memory_retrieval;
 pub mod memory_system;
 pub mod memory_voting;
@@ -43,7 +42,6 @@ pub use memory_injection::{
 };
 pub use memory_manager::{FactManager, FactStats};
 pub use memory_merge::{MemoryMergeEngine, MergeResult, UserProfile};
-pub use memory_prompt::{format_fact, format_facts, format_memory_for_prompt};
 pub use memory_retrieval::{
     build_sparse_vector, extract_semantic_terms, format_memory_for_injection,
     format_segmented_memory_for_injection, rank_archived_memories, retrieve_segmented_context,

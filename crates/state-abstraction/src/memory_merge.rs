@@ -1,7 +1,7 @@
 //! Cross-thread memory merge engine for unified user profile.
 
+use crate::memory::prompts::MERGE_PROFILE_PROMPT;
 use crate::memory_document::{Fact, MemoryDocument};
-use crate::memory_prompt::{self, MERGE_PROFILE_PROMPT};
 use crate::memory_voting::MemoryVotingEngine;
 use agent_ports::{LLMPort, LlmTurnContext, ThreadId};
 use chrono::{DateTime, Utc};
@@ -145,7 +145,7 @@ impl MemoryMergeEngine {
         &self,
         facts: &[Fact],
     ) -> Result<(String, Vec<String>, f32), String> {
-        let facts_str = memory_prompt::format_facts(facts);
+        let facts_str = format_facts(facts);
         let prompt = MERGE_PROFILE_PROMPT.replace("{facts}", &facts_str);
 
         let response = self
@@ -171,6 +171,21 @@ impl MemoryMergeEngine {
     }
 }
 
+fn format_facts(facts: &[Fact]) -> String {
+    facts.iter().map(format_fact).collect::<Vec<_>>().join("\n")
+}
+
+fn format_fact(fact: &Fact) -> String {
+    let timestamp = fact.created_at.format("%Y-%m-%d");
+    format!(
+        "[{} | {} | confidence: {:.2}] {}",
+        fact.category_str(),
+        timestamp,
+        fact.confidence,
+        fact.content
+    )
+}
+
 /// LLM merge summary result.
 #[derive(Debug, Clone, Deserialize)]
 struct MergeSummaryResult {
@@ -184,6 +199,11 @@ struct MergeSummaryResult {
 mod tests {
     use super::*;
     use crate::memory_document::{Fact, FactCategory};
+
+    #[test]
+    fn test_merge_profile_prompt_template_exists() {
+        assert!(MERGE_PROFILE_PROMPT.contains("<facts>"));
+    }
 
     #[test]
     fn test_user_profile_creation() {

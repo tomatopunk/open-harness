@@ -1,7 +1,7 @@
 //! LLM-based fact extractor for memory updates.
 
+use crate::memory::prompts::MEMORY_UPDATE_PROMPT;
 use crate::memory_document::{Fact, FactCategory, MemoryDocument};
-use crate::memory_prompt;
 use agent_ports::{LLMPort, LlmTurnContext};
 use serde::{Deserialize, Serialize};
 
@@ -60,10 +60,10 @@ impl FactExtractor {
         conversation: &str,
     ) -> Result<MemoryUpdate, String> {
         // Format current memory
-        let current_memory_str = memory_prompt::format_memory_for_prompt(current_memory);
+        let current_memory_str = format_memory_for_prompt(current_memory);
 
         // Build prompt
-        let prompt = memory_prompt::MEMORY_UPDATE_PROMPT
+        let prompt = MEMORY_UPDATE_PROMPT
             .replace("{current_memory}", &current_memory_str)
             .replace("{conversation}", conversation);
 
@@ -125,6 +125,46 @@ impl FactExtractor {
             history_update: update.history,
         }
     }
+}
+
+fn format_memory_for_prompt(doc: &MemoryDocument) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(ref work) = doc.user.work_context {
+        parts.push(format!("Work Context: {}", work));
+    }
+    if let Some(ref personal) = doc.user.personal_context {
+        parts.push(format!("Personal Context: {}", personal));
+    }
+    if let Some(ref top_of_mind) = doc.user.top_of_mind {
+        parts.push(format!("Top of Mind: {}", top_of_mind));
+    }
+    if let Some(ref recent) = doc.history.recent_months {
+        parts.push(format!("Recent Months: {}", recent));
+    }
+    if let Some(ref earlier) = doc.history.earlier_context {
+        parts.push(format!("Earlier Context: {}", earlier));
+    }
+    if let Some(ref long_term) = doc.history.long_term_background {
+        parts.push(format!("Long-term Background: {}", long_term));
+    }
+    if !doc.facts.is_empty() {
+        parts.push("Facts:".to_string());
+        parts.extend(doc.facts.iter().map(format_fact));
+    }
+
+    parts.join("\n")
+}
+
+fn format_fact(fact: &Fact) -> String {
+    let timestamp = fact.created_at.format("%Y-%m-%d");
+    format!(
+        "[{} | {} | confidence: {:.2}] {}",
+        fact.category_str(),
+        timestamp,
+        fact.confidence,
+        fact.content
+    )
 }
 
 /// Processed update ready to be applied to MemoryDocument.
@@ -192,6 +232,12 @@ impl ProcessedUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_memory_update_prompt_template_exists() {
+        assert!(MEMORY_UPDATE_PROMPT.contains("<current_memory>"));
+        assert!(MEMORY_UPDATE_PROMPT.contains("newFacts"));
+    }
 
     #[test]
     fn test_processed_update_apply() {

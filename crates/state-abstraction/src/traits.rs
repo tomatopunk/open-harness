@@ -269,10 +269,6 @@ impl<S: MemoryStore + ?Sized> MemoryStore for Box<S> {
         (**self).append_fact(thread_id, fact).await
     }
 
-    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
-        (**self).list_facts(thread_id).await
-    }
-
     async fn list_thread_ids_with_memory(&self) -> Result<Vec<Uuid>, StateError> {
         (**self).list_thread_ids_with_memory().await
     }
@@ -291,12 +287,6 @@ pub trait MemoryStore: MemoryPersistence {
         );
         doc.add_fact(new_fact);
         self.save_memory_document(thread_id, &doc).await
-    }
-
-    async fn list_facts(&self, thread_id: Uuid) -> Result<Vec<String>, StateError> {
-        let doc = self.load_memory_document(thread_id).await?;
-        // Return fact contents as strings for backward compatibility
-        Ok(doc.facts.iter().map(|f| f.content.clone()).collect())
     }
 
     /// Threads that have durable memory content (facts or structured user/history JSON).
