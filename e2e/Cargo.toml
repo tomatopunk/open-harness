@@ -63,4 +63,9 @@ name = "engine_certification"
 path = "src/tests/engine_certification.rs"
 harness = true
 
+[[test]]
+name = "capability_matrix"
+path = "src/tests/capability_matrix.rs"
+harness = true
+
 [workspace]
