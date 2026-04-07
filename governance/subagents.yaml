@@ -1,0 +1,2 @@
+max_concurrent: 4
+max_tasks_per_run: 8

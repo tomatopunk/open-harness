@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo lint
+      - name: build
+        run: cargo build --workspace --all-targets
+      - name: test
+        run: cargo xtest
+      - name: e2e acceptance matrix
+        run: cargo test --manifest-path e2e/Cargo.toml --tests

@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/kernel",
+    "crates/agent-kernel",
+    "crates/plugin-system",
+    "crates/llm-providers",
+    "crates/mcp-bridge",
+    "crates/unified-config",
+    "crates/agent-ports",
+    "crates/state-abstraction",
+    "crates/ecosystem-registry",
+    "crates/package-manager",
+    "plugins/gateway-plugin",
+    "plugins/manage-plugin",
+    "plugins/dingtalk-plugin",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+parking_lot = "0.12"
+figment = { version = "0.10", features = ["yaml", "env"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+regex = "1.10"
+semver = "1.0"
+
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"

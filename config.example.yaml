@@ -1,0 +1,65 @@
+# Open Harness Development Configuration
+# 开发环境配置 - 使用 local_fs 存储模式
+
+log_level: debug
+
+# 工作目录
+workspace_root: .
+plugins_dir: plugins
+
+# Storage 配置 - 使用本地文件系统
+storage:
+  mode: localfs
+  local_fs:
+    root: .data/local-fs
+  sqlite:
+    url: null
+
+# Agent Loop 配置
+agent_loop:
+  enabled: true
+  max_iterations: 100
+  completion_promise: "DONE"
+  debounce_seconds: 30
+
+# Memory 系统配置
+memory:
+  enabled: true
+  storage_path: memory/memory.json
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+
+# Channels 配置
+channels:
+  enabled:
+    - dingtalk
+  bind: 0.0.0.0:8082
+  dingtalk:
+    enabled: false
+    webhook_url: $DINGTALK_WEBHOOK_URL
+    app_secret: $DINGTALK_APP_SECRET
+  wecom:
+    enabled: false
+    webhook_url: $WECOM_WEBHOOK_URL
+
+# Extensions 配置路径（MCP servers and skills）
+extensions_config_path: ./extensions_config.json
+
+# LLM 配置 (for rig-rs provider)
+llm:
+  provider_type: open_ai
+  model: gpt-4
+  api_key: $OPENAI_API_KEY
+  base_url: https://api.openai.com/v1
+  max_tokens: 4096
+  temperature: 0.7
+
+# Gateway 配置
+gateway:
+  bind: 0.0.0.0:8080
+
+# Manage 配置
+manage:
+  bind: 0.0.0.0:8081

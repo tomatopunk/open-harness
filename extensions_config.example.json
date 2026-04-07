@@ -1,0 +1,51 @@
+{
+  "mcp_servers": {
+    "filesystem": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/path/to/allowed/files"
+      ],
+      "env": {},
+      "description": "Provides filesystem access within allowed directories"
+    },
+    "github": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "$GITHUB_TOKEN"
+      },
+      "description": "GitHub operations (issues, pull requests, repository search)"
+    },
+    "postgres": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://localhost/mydb"
+      ],
+      "env": {},
+      "description": "PostgreSQL database access"
+    }
+  },
+  "skills": {
+    "weather": {
+      "enabled": true,
+      "version": "0.1.0"
+    },
+    "code-search": {
+      "enabled": false,
+      "version": "0.1.0"
+    }
+  }
+}

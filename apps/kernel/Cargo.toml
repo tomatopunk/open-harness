@@ -1,0 +1,23 @@
+[package]
+name = "open-harness-kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# 工作区依赖
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+figment = { workspace = true }
+
+# 本地 crate 依赖
+agent-kernel = { path = "../../crates/agent-kernel" }
+plugin-system = { path = "../../crates/plugin-system" }
+mcp-bridge = { path = "../../crates/mcp-bridge" }

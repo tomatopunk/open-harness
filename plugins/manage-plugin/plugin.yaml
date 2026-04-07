@@ -1,0 +1,9 @@
+name: manage
+version: 0.1.0
+description: Open Harness Manage Plugin - 管理 API
+authors:
+  - Open Harness Team
+type: api
+enabled: true
+dependencies:
+  - gateway

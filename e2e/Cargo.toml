@@ -1,0 +1,71 @@
+[package]
+name = "open-harness-e2e"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "stream"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-test = "0.4"
+assert2 = "0.3"
+test-log = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+anyhow = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = "0.3"
+tempfile = "3.8"
+agent-kernel = { path = "../crates/agent-kernel" }
+unified-config = { path = "../crates/unified-config" }
+state-abstraction = { path = "../crates/state-abstraction" }
+
+[dev-dependencies]
+
+[[test]]
+name = "gateway"
+path = "src/tests/gateway.rs"
+harness = true
+
+[[test]]
+name = "mcp"
+path = "src/tests/mcp.rs"
+harness = true
+
+[[test]]
+name = "agent_loop"
+path = "src/tests/agent_loop.rs"
+harness = true
+
+[[test]]
+name = "kernel_integration"
+path = "src/tests/kernel_integration.rs"
+harness = true
+
+[[test]]
+name = "config_loading"
+path = "src/tests/config_loading.rs"
+harness = true
+
+[[test]]
+name = "state_abstraction"
+path = "src/tests/state_abstraction.rs"
+harness = true
+
+[[test]]
+name = "agent_loop_deep"
+path = "src/tests/agent_loop_deep.rs"
+harness = true
+
+[[test]]
+name = "engine_certification"
+path = "src/tests/engine_certification.rs"
+harness = true
+
+[[test]]
+name = "capability_matrix"
+path = "src/tests/capability_matrix.rs"
+harness = true
+
+[workspace]

@@ -1,0 +1,17 @@
+[package]
+name = "ecosystem-registry"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Ecosystem registry client for Open Harness"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }

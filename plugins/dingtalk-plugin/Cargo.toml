@@ -1,0 +1,24 @@
+[package]
+name = "dingtalk-plugin"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Open Harness DingTalk Channel Plugin"
+
+[lib]
+
+[dependencies]
+# 工作区依赖
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+
+# 本地 crate 依赖
+plugin-system = { path = "../../crates/plugin-system" }
+agent-kernel = { path = "../../crates/agent-kernel" }

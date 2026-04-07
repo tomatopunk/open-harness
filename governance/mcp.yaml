@@ -1,0 +1,38 @@
+servers:
+  - name: github
+    enabled: false
+    type: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    description: GitHub operations via MCP
+
+  - name: filesystem
+    enabled: false
+    type: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/workspace"
+    description: File system operations via MCP
+
+  - name: postgres
+    enabled: false
+    type: http
+    url: "http://localhost:8080/mcp"
+    headers:
+      Content-Type: "application/json"
+    oauth:
+      enabled: false
+      token_url: "https://auth.example.com/oauth/token"
+      grant_type: "client_credentials"
+      client_id: "${CLIENT_ID}"
+      client_secret: "${CLIENT_SECRET}"
+      scopes:
+        - "mcp:tools"
+        - "mcp:resources"
+    description: PostgreSQL operations via MCP

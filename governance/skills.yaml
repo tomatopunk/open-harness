@@ -1,0 +1,4 @@
+entries:
+  - name: research
+    enabled: true
+    preamble: "Prefer primary sources; summarize findings before long tool chains."

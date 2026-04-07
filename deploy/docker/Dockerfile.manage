@@ -1,0 +1,14 @@
+FROM rust:1.85-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY apps ./apps
+COPY crates ./crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry cargo fetch
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/app/target cargo build --release -p open-harness-manage
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/open-harness-manage /usr/local/bin/
+ENV OPEN_HARNESS_MANAGE__BIND=0.0.0.0:8081
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/open-harness-manage"]

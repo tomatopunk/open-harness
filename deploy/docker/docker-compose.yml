@@ -1,0 +1,111 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["full"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: open_harness
+      POSTGRES_PASSWORD: open_harness
+      POSTGRES_DB: open_harness
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U open_harness -d open_harness"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["full"]
+
+  open-harness-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.gateway
+    ports:
+      - "8080:8080"
+    environment:
+      OPEN_HARNESS_GATEWAY__LANGGRAPH_UPSTREAM: ${OPEN_HARNESS_MODEL_URL:?please_set_real_langgraph_url}
+      OPEN_HARNESS_CONFIG_PATH: /tmp/config.yaml
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo >/dev/tcp/127.0.0.1/8080"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["dev-fast", "full"]
+
+  open-harness-manage:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.manage
+    ports:
+      - "8081:8081"
+    environment:
+      OPEN_HARNESS_MANAGE__LANGGRAPH_URL: ${OPEN_HARNESS_MODEL_URL:?please_set_real_langgraph_url}
+      OPEN_HARNESS_MANAGE__THREADS_ROOT: /data/threads
+      OPEN_HARNESS_CONFIG_PATH: /data/config.yaml
+      OPEN_HARNESS_STORAGE__MODE: ${OPEN_HARNESS_STORAGE_MODE:-local_fs}
+      OPEN_HARNESS_STORAGE__REDIS_URL: redis://redis:6379
+      OPEN_HARNESS_STORAGE__POSTGRES_URL: postgres://open_harness:open_harness@postgres:5432/open_harness
+      OPEN_HARNESS_STORAGE__S3_PREFIX: open-harness
+    volumes:
+      - manage-data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo >/dev/tcp/127.0.0.1/8081"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["dev-fast", "full"]
+
+  open-harness-channel:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.channel
+    ports:
+      - "8082:8082"
+    environment:
+      OPEN_HARNESS_CHANNEL__GATEWAY_URL: http://open-harness-gateway:8080
+    depends_on:
+      open-harness-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo >/dev/tcp/127.0.0.1/8082"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["dev-fast", "full"]
+
+  open-harness-orchestrator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.orchestrator
+    ports:
+      - "8083:8083"
+    environment:
+      OPEN_HARNESS_CONFIG_PATH: /data/config.yaml
+      OPEN_HARNESS_STORAGE__MODE: ${OPEN_HARNESS_STORAGE_MODE:-local_fs}
+      OPEN_HARNESS_STORAGE__REDIS_URL: redis://redis:6379
+      OPEN_HARNESS_STORAGE__POSTGRES_URL: postgres://open_harness:open_harness@postgres:5432/open_harness
+      OPEN_HARNESS_STORAGE__S3_PREFIX: open-harness
+    volumes:
+      - manage-data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo >/dev/tcp/127.0.0.1/8083"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    profiles: ["dev-fast", "full"]
+
+volumes:
+  manage-data:
+  postgres-data:

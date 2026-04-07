@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.env
+.env.*
+.DS_Store
+.cursor
+config.yaml
+extensions_config.json
+.sisyphus/
+e2e/target
