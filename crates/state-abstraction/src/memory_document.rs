@@ -515,54 +515,14 @@ pub fn estimate_tokens(text: &str) -> usize {
     std::cmp::max(1, chars.div_ceil(4))
 }
 
-/// Decode legacy `Vec<String>` JSON or current [`MemoryDocument`] JSON.
 pub fn decode_memory_json_str(raw: &str) -> Result<MemoryDocument, String> {
     let t = raw.trim();
     if t.is_empty() {
         return Ok(MemoryDocument::default());
     }
 
-    // Try to decode as current MemoryDocument format
     if let Ok(doc) = serde_json::from_str::<MemoryDocument>(t) {
         return Ok(doc);
-    }
-
-    // Try to decode as legacy Vec<String> format
-    if let Ok(_facts_vec) = serde_json::from_str::<Vec<String>>(t) {
-        return Ok(MemoryDocument {
-            schema_version: MEMORY_DOCUMENT_SCHEMA_VERSION,
-            facts: Vec::new(), // Legacy format has no structured facts
-            user: MemoryUserProfile::default(),
-            history: MemoryHistory::default(),
-            segmented_context: SegmentedContext::default(),
-            metadata: MemoryMetadata::default(),
-        });
-    }
-
-    // Try to decode as old format with Value fields
-    if let Ok(old_doc) = serde_json::from_str::<serde_json::Value>(t) {
-        let facts = old_doc
-            .get("facts")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| Fact::new(s.to_string(), FactCategory::default(), 0.5, String::new()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let user = MemoryUserProfile::default();
-        let history = MemoryHistory::default();
-
-        return Ok(MemoryDocument {
-            schema_version: MEMORY_DOCUMENT_SCHEMA_VERSION,
-            facts,
-            user,
-            history,
-            segmented_context: SegmentedContext::default(),
-            metadata: MemoryMetadata::default(),
-        });
     }
 
     Err("memory json: unable to decode".to_string())
@@ -656,13 +616,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_legacy_json() {
+    fn test_decode_legacy_json_fails() {
         let legacy_json = r#"["fact1", "fact2", "fact3"]"#;
-        let doc = decode_memory_json_str(legacy_json).unwrap();
 
-        assert_eq!(doc.schema_version, MEMORY_DOCUMENT_SCHEMA_VERSION);
-        // Legacy format doesn't populate structured facts
-        assert!(doc.user.work_context.is_none());
+        let error = decode_memory_json_str(legacy_json).unwrap_err();
+
+        assert_eq!(error, "memory json: unable to decode");
     }
 
     #[test]

@@ -350,7 +350,7 @@ impl<S: MemoryPersistence> MemorySystem<S> {
                     memory.metadata.milestone_snapshots += 1;
                 }
             }
-        } else {
+        } else if facts.is_empty() {
             memory.segmented_context.working = WorkingContextSegment::default();
             memory.segmented_context.archived = ArchivedContextSegment::default();
         }
@@ -526,17 +526,12 @@ impl<S: MemoryPersistence> MemorySystem<S> {
         memory: &mut MemoryDocument,
         decision: CompressionDecision,
     ) {
-        let duplicate = memory
-            .segmented_context
-            .compression_log
-            .last()
-            .map(|last| {
-                last.level == decision.level
-                    && last.trigger == decision.trigger
-                    && last.source_fact_ids == decision.source_fact_ids
-                    && last.output_entry_ids == decision.output_entry_ids
-            })
-            .unwrap_or(false);
+        let duplicate = memory.segmented_context.compression_log.iter().any(|existing| {
+            existing.level == decision.level
+                && existing.trigger == decision.trigger
+                && existing.source_fact_ids == decision.source_fact_ids
+                && existing.output_entry_ids == decision.output_entry_ids
+        });
 
         if !duplicate {
             memory.segmented_context.compression_log.push(decision);
@@ -938,5 +933,95 @@ mod tests {
         assert!(retrieval.archived_matches.iter().any(|matched| {
             matched.entry.key_facts.iter().any(|fact| fact.id == mandatory_fact_id)
         }));
+    }
+
+    #[tokio::test]
+    async fn load_memory_preserves_existing_segmented_context_without_new_trigger() {
+        let thread_id = Uuid::new_v4();
+        let store = MockStore::new();
+        let mut doc = MemoryDocument::default();
+
+        for entry in [
+            "Project Atlas uses PostgreSQL for analytics workloads",
+            "Release automation depends on archived milestone summaries",
+            "Operators need working-memory compression to survive reloads",
+            "Recent context should stay separate from archived state",
+        ] {
+            doc.add_fact(Fact::new(
+                entry.to_string(),
+                FactCategory::Knowledge,
+                0.9,
+                thread_id.to_string(),
+            ));
+        }
+
+        let save_system = MemorySystem::new(
+            MemorySystemConfig {
+                compression_token_threshold: 12,
+                milestone_snapshot_interval: 100,
+                recent_fact_window: 1,
+                working_fact_window: 2,
+                ..MemorySystemConfig::default()
+            },
+            store.clone(),
+        );
+        save_system.save_memory(thread_id, &doc).await.unwrap();
+
+        let persisted = store.load_memory_document(thread_id).await.unwrap();
+        assert!(!persisted.segmented_context.working.summaries.is_empty());
+        assert!(!persisted.segmented_context.archived.entries.is_empty());
+
+        let load_system = MemorySystem::new(
+            MemorySystemConfig {
+                compression_token_threshold: usize::MAX,
+                milestone_snapshot_interval: 100,
+                recent_fact_window: 1,
+                working_fact_window: 2,
+                ..MemorySystemConfig::default()
+            },
+            store,
+        );
+
+        let loaded = load_system.load_memory(thread_id).await.unwrap();
+
+        assert!(!loaded.segmented_context.working.summaries.is_empty());
+        assert!(!loaded.segmented_context.archived.entries.is_empty());
+        assert_eq!(loaded.segmented_context.compression_log.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn repeated_save_does_not_duplicate_identical_compression_log_entries() {
+        let config = MemorySystemConfig {
+            compression_token_threshold: 12,
+            milestone_snapshot_interval: 100,
+            recent_fact_window: 1,
+            working_fact_window: 2,
+            ..MemorySystemConfig::default()
+        };
+        let system = MemorySystem::new(config, MockStore::new());
+        let thread_id = Uuid::new_v4();
+        let mut doc = MemoryDocument::default();
+
+        for entry in [
+            "Project Atlas uses PostgreSQL for analytics workloads",
+            "Release automation depends on archived milestone summaries",
+            "Operators need working-memory compression to survive reloads",
+            "Recent context should stay separate from archived state",
+        ] {
+            doc.add_fact(Fact::new(
+                entry.to_string(),
+                FactCategory::Knowledge,
+                0.9,
+                thread_id.to_string(),
+            ));
+        }
+
+        system.save_memory(thread_id, &doc).await.unwrap();
+        system.save_memory(thread_id, &doc).await.unwrap();
+
+        let loaded = system.load_memory(thread_id).await.unwrap();
+
+        assert_eq!(loaded.segmented_context.compression_log.len(), 2);
+        assert_eq!(loaded.metadata.compression_count, 2);
     }
 }
